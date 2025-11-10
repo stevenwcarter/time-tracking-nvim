@@ -1,0 +1,12 @@
+[package]
+name = "time-tracking-nvim"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "time_tracking_nvim"
+
+[dependencies]
+nvim-oxi = { version = "0.6.0", features = ["libuv", "neovim-0-11"] }
+time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main" }
