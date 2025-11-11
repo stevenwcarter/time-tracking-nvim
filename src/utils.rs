@@ -1,30 +1,25 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use nvim_oxi::{
     Result,
-    api::{self, Window},
+    api::{self, Buffer, Error, Window, opts::OptionOptsBuilder},
 };
 use time_tracking_cli::Config;
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)
 pub(crate) fn is_time_tracking_file(config: &Config) -> Result<bool> {
     let current_buffer = api::get_current_buf();
-    let buffer_name = current_buffer.get_name()?;
 
-    if buffer_name.as_os_str().is_empty() {
-        return Ok(false);
-    }
-
-    let buffer_path = Path::new(&buffer_name);
-    let data_dir_str = config.get_data_directory().unwrap_or("");
-    let data_dir = Path::new(data_dir_str);
-
-    // Check if file is in data directory and has .md extension
-    Ok(buffer_path.starts_with(data_dir)
-        && matches!(buffer_path.extension(), Some(ext) if ext == "md"))
+    is_buf_time_tracking_file(current_buffer, config)
 }
+
+/// Check if the provided window's buffer is a time tracking file (markdown file in data directory)
 pub(crate) fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
-    let current_buffer = win.get_buf()?;
+    is_buf_time_tracking_file(win.get_buf()?, config)
+}
+
+/// Checks if the provided buffer is a time tracking file (markdown file in data directory)
+pub(crate) fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Result<bool> {
     let buffer_name = current_buffer.get_name()?;
 
     if buffer_name.as_os_str().is_empty() {
@@ -32,12 +27,38 @@ pub(crate) fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<
     }
 
     let buffer_path = Path::new(&buffer_name);
-    let data_dir_str = config.get_data_directory().unwrap_or("");
-    let data_dir = Path::new(data_dir_str);
+    let buffer_path = fs::canonicalize(buffer_path)
+        .map_err(|e| {
+            Error::Other(format!(
+                "Could not convert {} to a path: {}",
+                buffer_name.display(),
+                e
+            ))
+        })
+        .ok();
+
+    if buffer_path.is_none() {
+        return Ok(false);
+    }
+
+    // TODO: Need to canonicalize in case the data directory is a symlink, should be done upstream
+    // probably
+    let data_dir = fs::canonicalize(config.get_data_directory().unwrap_or(""))
+        .map_err(|_| Error::Other("could not find path for data directory".to_owned()))
+        .ok();
+
+    if buffer_path.is_none() || data_dir.is_none() {
+        return Ok(false);
+    }
+
+    let buffer_path = buffer_path.unwrap();
+    let data_dir = data_dir.unwrap();
 
     // Check if file is in data directory and has .md extension
-    Ok(buffer_path.starts_with(data_dir)
-        && matches!(buffer_path.extension(), Some(ext) if ext == "md"))
+    let is_time_tracking_file = buffer_path.starts_with(data_dir)
+        && matches!(buffer_path.extension(), Some(ext) if ext == "md");
+
+    Ok(is_time_tracking_file)
 }
 
 /// Get the content of the current buffer

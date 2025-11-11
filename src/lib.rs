@@ -1,5 +1,4 @@
 use nvim_oxi::api::opts::OptionOptsBuilder;
-use nvim_oxi::api::types::LogLevel;
 use nvim_oxi::api::{Buffer, Window};
 use nvim_oxi::schedule;
 use nvim_oxi::{
@@ -16,14 +15,18 @@ use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_fi
 
 mod utils;
 
+#[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => {
+        use nvim_oxi::api::types::LogLevel;
         let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Info, &Default::default());
     };
 }
 
+#[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
+        use nvim_oxi::api::types::LogLevel;
         let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Error, &Default::default());
     };
 }
@@ -371,33 +374,14 @@ fn time_tracking_nvim() -> Result<Dictionary> {
             .build(),
     )?;
 
-    // Set up autocommand to auto-open preview when entering time tracking files
-    // Using multiple events to catch different scenarios, but only for markdown files
+    // Set up autocommand to auto-open preview after Neovim fully starts
     api::create_autocmd(
-        vec!["BufEnter", "BufWinEnter", "BufRead", "BufReadPost"],
+        vec!["VimEnter", "BufWinEnter"],
         &CreateAutocmdOpts::builder()
             .patterns(vec!["*.md"])
             .command("TimeTrackingAutoOpen")
             .build(),
     )?;
-
-    // Set up autocommand to auto-open preview after Neovim fully starts
-    // VimEnter doesn't work well with patterns, so we trigger on VimEnter and check inside the function
-    api::create_autocmd(
-        vec!["VimEnter"],
-        &CreateAutocmdOpts::builder()
-            .command("TimeTrackingAutoOpen")
-            .build(),
-    )?;
-
-    // Set up autocommand to auto-close preview when leaving time tracking files
-    // api::create_autocmd(
-    //     vec!["BufLeave"],
-    //     &CreateAutocmdOpts::builder()
-    //         .patterns(vec!["*.md"])
-    //         .command("TimeTrackingAutoClose")
-    //         .build(),
-    // )?;
 
     // Set up autocommand to close preview window when quitting Neovim
     api::create_autocmd(
@@ -414,6 +398,7 @@ fn time_tracking_nvim() -> Result<Dictionary> {
             .build(),
     )?;
 
+    // Scheduled to delay until startup is complete
     schedule(|_| {
         let result = api::command("TimeTrackingAutoOpen");
         if let Err(e) = result {
