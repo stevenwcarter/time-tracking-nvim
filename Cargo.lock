@@ -819,7 +819,7 @@ dependencies = [
 [[package]]
 name = "time-tracking-cli"
 version = "0.7.0"
-source = "git+https://github.com/stevenwcarter/time-tracking-cli.git?branch=main#8d160333f3d7fc51c28206c45418617ba2189f44"
+source = "git+https://github.com/stevenwcarter/time-tracking-cli.git?branch=main#4f89608fd4253de485506b6ce1789b3e0a2fccec"
 dependencies = [
  "anyhow",
  "clap",

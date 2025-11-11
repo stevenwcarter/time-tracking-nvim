@@ -9,4 +9,4 @@ name = "time_tracking_nvim"
 
 [dependencies]
 nvim-oxi = { version = "0.6.0", features = ["libuv", "neovim-0-11"] }
-time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main" }
+time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }

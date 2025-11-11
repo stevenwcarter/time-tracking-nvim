@@ -1,3 +1,4 @@
+use nvim_oxi::api::types::LogLevel;
 use nvim_oxi::{
     Dictionary, Function, Result,
     api::{
@@ -8,6 +9,18 @@ use nvim_oxi::{
 };
 use std::path::Path;
 use time_tracking_cli::Config;
+
+macro_rules! log_info {
+    ($($arg:tt)*) => {
+        let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Info, &Default::default());
+    };
+}
+
+macro_rules! log_error {
+    ($($arg:tt)*) => {
+        let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Error, &Default::default());
+    };
+}
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)
 fn is_time_tracking_file(config: &Config) -> Result<bool> {
@@ -66,6 +79,12 @@ fn create_or_update_preview(output: &str) -> Result<()> {
                 buf.set_option("swapfile", false)?;
                 buf.set_option("readonly", true)?;
                 buf.set_option("modifiable", false)?;
+                // let option_opts = OptionOpts::builder().buffer(buf).build();
+                // set_option_value("buftype", "nofile", &option_opts);
+                // set_option_value("bufhidden", "hide", &option_opts);
+                // set_option_value("swapfile", false, &option_opts);
+                // set_option_value("readonly", true, &option_opts);
+                // set_option_value("modifiable", false, &option_opts);
             }
             buf
         }
@@ -123,6 +142,69 @@ fn close_preview() -> Result<()> {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
         if buf_name.ends_with("[Time Tracking Preview]") {
+            win.close(false)?;
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Auto-open preview window if this is a time tracking file and preview isn't open
+fn auto_open_preview() -> Result<()> {
+    let config = Config::get_no_args();
+
+    // Check if this is a time tracking file
+    if !is_time_tracking_file(config)? {
+        return Ok(());
+    }
+
+    // Check if preview window already exists
+    let windows = api::list_wins();
+    let mut has_preview = false;
+
+    for win in windows {
+        let buf = win.get_buf()?;
+        let buf_name = buf.get_name()?;
+        if buf_name.ends_with("[Time Tracking Preview]") {
+            has_preview = true;
+            break;
+        }
+    }
+
+    // Only open if preview doesn't already exist
+    if !has_preview {
+        log_info!("Auto-opening preview for time tracking file\n");
+        let buffer_content = get_buffer_content()?;
+        let formatted_output = config.get_formatter().day_summary(
+            &buffer_content,
+            "",
+            config.get_prefix(),
+            config.get_suffix(),
+        );
+        create_or_update_preview(&formatted_output)?;
+    }
+
+    Ok(())
+}
+
+/// Auto-close preview window if we're not in a time tracking file
+fn auto_close_preview() -> Result<()> {
+    let config = Config::get_no_args();
+
+    // If this is still a time tracking file, don't close the preview
+    if is_time_tracking_file(config)? {
+        log_info!("Staying in time tracking file, not closing preview\n");
+        return Ok(());
+    }
+
+    // Check if preview window exists and close it
+    let windows = api::list_wins();
+    for win in windows {
+        let buf = win.get_buf()?;
+        let buf_name = buf.get_name()?;
+        if buf_name.ends_with("[Time Tracking Preview]") {
+            log_error!("Auto-closing preview (left time tracking file)\n");
             win.close(false)?;
             break;
         }
@@ -215,6 +297,16 @@ fn time_tracking_nvim() -> Result<Dictionary> {
         Ok(())
     });
 
+    // Create command to auto-open preview
+    let auto_open =
+        Function::from_fn(move |_: CommandArgs| -> nvim_oxi::Result<()> { auto_open_preview() });
+
+    // Create command to auto-close preview
+    let auto_close = Function::from_fn(move |_: CommandArgs| -> Result<()> {
+        auto_close_preview()?;
+        Ok(())
+    });
+
     // Register commands
     api::create_user_command(
         "TimeTrackingToggle",
@@ -228,11 +320,39 @@ fn time_tracking_nvim() -> Result<Dictionary> {
         &CreateCommandOpts::builder().build(),
     )?;
 
+    api::create_user_command(
+        "TimeTrackingAutoOpen",
+        auto_open,
+        &CreateCommandOpts::builder().build(),
+    )?;
+
+    api::create_user_command(
+        "TimeTrackingAutoClose",
+        auto_close,
+        &CreateCommandOpts::builder().build(),
+    )?;
+
     // Set up autocommands for live updates on markdown files
     api::create_autocmd(
         vec!["TextChanged", "TextChangedI"],
         &CreateAutocmdOpts::builder()
             .command("TimeTrackingUpdate")
+            .build(),
+    )?;
+
+    // Set up autocommand to auto-open preview when entering time tracking files
+    api::create_autocmd(
+        vec!["BufEnter", "BufWinEnter"],
+        &CreateAutocmdOpts::builder()
+            .command("TimeTrackingAutoOpen")
+            .build(),
+    )?;
+
+    // Set up autocommand to auto-close preview when leaving time tracking files
+    api::create_autocmd(
+        vec!["BufLeave"],
+        &CreateAutocmdOpts::builder()
+            .command("TimeTrackingAutoClose")
             .build(),
     )?;
 
