@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use nvim_oxi::{
     Result,
-    api::{self, Buffer, Error, Window, opts::OptionOptsBuilder},
+    api::{self, Buffer, Error, Window},
 };
 use time_tracking_cli::Config;
 

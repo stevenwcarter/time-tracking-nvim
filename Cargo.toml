@@ -2,6 +2,20 @@
 name = "time-tracking-nvim"
 version = "0.1.0"
 edition = "2024"
+authors = ["Steven Carter <steve@stevenwcarter.com>"]
+description = "A high-performance Neovim plugin for time tracking with live preview"
+license = "MIT"
+repository = "https://github.com/stevenwcarter/time-tracking-nvim"
+homepage = "https://github.com/stevenwcarter/time-tracking-nvim"
+keywords = ["neovim", "plugin", "time-tracking", "productivity"]
+categories = ["command-line-utilities", "text-editors"]
+readme = "README.md"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true
 
 [lib]
 crate-type = ["cdylib"]
