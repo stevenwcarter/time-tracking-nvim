@@ -1,0 +1,73 @@
+use std::path::Path;
+
+use nvim_oxi::{
+    Result,
+    api::{self, Window},
+};
+use time_tracking_cli::Config;
+
+/// Check if the current buffer is a time tracking file (markdown file in data directory)
+pub(crate) fn is_time_tracking_file(config: &Config) -> Result<bool> {
+    let current_buffer = api::get_current_buf();
+    let buffer_name = current_buffer.get_name()?;
+
+    if buffer_name.as_os_str().is_empty() {
+        return Ok(false);
+    }
+
+    let buffer_path = Path::new(&buffer_name);
+    let data_dir_str = config.get_data_directory().unwrap_or("");
+    let data_dir = Path::new(data_dir_str);
+
+    // Check if file is in data directory and has .md extension
+    Ok(buffer_path.starts_with(data_dir)
+        && matches!(buffer_path.extension(), Some(ext) if ext == "md"))
+}
+pub(crate) fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
+    let current_buffer = win.get_buf()?;
+    let buffer_name = current_buffer.get_name()?;
+
+    if buffer_name.as_os_str().is_empty() {
+        return Ok(false);
+    }
+
+    let buffer_path = Path::new(&buffer_name);
+    let data_dir_str = config.get_data_directory().unwrap_or("");
+    let data_dir = Path::new(data_dir_str);
+
+    // Check if file is in data directory and has .md extension
+    Ok(buffer_path.starts_with(data_dir)
+        && matches!(buffer_path.extension(), Some(ext) if ext == "md"))
+}
+
+/// Get the content of the current buffer
+pub(crate) fn get_buffer_content() -> Result<String> {
+    let current_buffer = api::get_current_buf();
+    let line_count = current_buffer.line_count()?;
+    let lines = current_buffer.get_lines(0..line_count, false)?;
+    Ok(lines
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>()
+        .join("\n"))
+}
+
+pub(crate) fn any_tracking_visible(config: &Config) -> Result<bool> {
+    for win in api::list_wins() {
+        let buf = win.get_buf()?;
+        let name = buf.get_name()?;
+
+        // Skip the preview itself
+        if name.ends_with("[Time Tracking Preview]") {
+            continue;
+        }
+
+        // Decide if THIS buffer is a time-tracking one.
+        // If your existing utils::is_time_tracking_file(config) only checks
+        // the *current* buffer, add a sibling helper that inspects `name`.
+        if is_win_time_tracking_file(win, config)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
