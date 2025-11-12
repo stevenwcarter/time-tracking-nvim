@@ -2,6 +2,8 @@
 
 A high-performance Neovim plugin written in Rust that provides live time tracking previews while editing markdown files. Built with [nvim-oxi](https://github.com/noib3/nvim-oxi) for optimal performance and reliability.
 
+![short demo](./docs/tt-vim-demo.gif)
+
 ## Features
 
 - 🚀 **High Performance**: Written in Rust for minimal overhead
