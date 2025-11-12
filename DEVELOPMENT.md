@@ -55,6 +55,29 @@ cargo build --release
 └── target/             # Build artifacts (gitignored)
 ```
 
+## Testing
+
+### Unit Testing (Main Crate)
+```bash
+# Run basic unit tests and doc tests for the main crate
+cargo test
+```
+
+### Integration Testing (nvim-oxi Framework)
+```bash
+# Run comprehensive integration tests with Neovim
+./integration_tests/run_tests.sh
+```
+
+The integration tests are located in the `integration_tests/` directory and use the nvim-oxi testing framework to test plugin functionality within a real Neovim instance. These tests cover:
+
+- Buffer detection and content extraction
+- Preview window creation and management  
+- Command registration and autocommand setup
+- Edge cases and error handling
+
+**Note**: Integration tests require Neovim to be installed and available in PATH.
+
 ## Release Process
 
 1. Update version in `Cargo.toml`

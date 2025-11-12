@@ -7,19 +7,19 @@ use nvim_oxi::{
 use time_tracking_cli::Config;
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)
-pub(crate) fn is_time_tracking_file(config: &Config) -> Result<bool> {
+pub fn is_time_tracking_file(config: &Config) -> Result<bool> {
     let current_buffer = api::get_current_buf();
 
     is_buf_time_tracking_file(current_buffer, config)
 }
 
 /// Check if the provided window's buffer is a time tracking file (markdown file in data directory)
-pub(crate) fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
+pub fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
     is_buf_time_tracking_file(win.get_buf()?, config)
 }
 
 /// Checks if the provided buffer is a time tracking file (markdown file in data directory)
-pub(crate) fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Result<bool> {
+pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Result<bool> {
     let buffer_name = current_buffer.get_name()?;
 
     if buffer_name.as_os_str().is_empty() {
@@ -62,7 +62,7 @@ pub(crate) fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config)
 }
 
 /// Get the content of the current buffer
-pub(crate) fn get_buffer_content() -> Result<String> {
+pub fn get_buffer_content() -> Result<String> {
     let current_buffer = api::get_current_buf();
     let line_count = current_buffer.line_count()?;
     let lines = current_buffer.get_lines(0..line_count, false)?;
@@ -73,7 +73,7 @@ pub(crate) fn get_buffer_content() -> Result<String> {
         .join("\n"))
 }
 
-pub(crate) fn any_tracking_visible(config: &Config) -> Result<bool> {
+pub fn any_tracking_visible(config: &Config) -> Result<bool> {
     for win in api::list_wins() {
         let buf = win.get_buf()?;
         let name = buf.get_name()?;

@@ -13,7 +13,7 @@ use time_tracking_cli::Config;
 
 use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_file};
 
-mod utils;
+pub mod utils;
 
 #[macro_export]
 macro_rules! log_info {
@@ -126,7 +126,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 }
 
 /// Close the preview window if it exists
-fn close_preview() -> Result<()> {
+pub fn close_preview() -> Result<()> {
     let windows = api::list_wins();
 
     for win in windows {
@@ -142,7 +142,7 @@ fn close_preview() -> Result<()> {
 }
 
 /// Auto-open preview window if this is a time tracking file and preview isn't open
-fn auto_open_preview() -> Result<()> {
+pub fn auto_open_preview() -> Result<()> {
     // Add error handling wrapper to prevent panics
     match auto_open_preview_impl() {
         Ok(_) => Ok(()),
@@ -153,7 +153,7 @@ fn auto_open_preview() -> Result<()> {
     }
 }
 
-fn auto_open_preview_impl() -> Result<()> {
+pub fn auto_open_preview_impl() -> Result<()> {
     // Add a small delay to avoid race conditions with window operations
     std::thread::sleep(std::time::Duration::from_millis(200));
 
@@ -195,7 +195,7 @@ fn auto_open_preview_impl() -> Result<()> {
 }
 
 /// Auto-close preview window if we're not in a time tracking file
-fn auto_close_preview() -> Result<()> {
+pub fn auto_close_preview() -> Result<()> {
     // Add error handling wrapper to prevent panics
     match auto_close_preview_impl() {
         Ok(_) => Ok(()),
@@ -206,7 +206,7 @@ fn auto_close_preview() -> Result<()> {
     }
 }
 
-fn auto_close_preview_impl() -> Result<()> {
+pub fn auto_close_preview_impl() -> Result<()> {
     // Add a small delay to avoid race conditions with window operations
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -227,12 +227,8 @@ fn auto_close_preview_impl() -> Result<()> {
     Ok(())
 }
 
-/// Plugin to provide time tracking previews while editing in Neovim.
-#[nvim_oxi::plugin]
-fn time_tracking_nvim() -> Result<Dictionary> {
-    // The plugin will generate data on-demand when commands are executed
-    let config = Config::get_no_args();
-
+/// inner function which accepts `config` for testing
+pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> {
     // Create command to toggle preview
     let toggle_preview = Function::from_fn(move |_: CommandArgs| -> Result<()> {
         // Check if this is a time tracking file
@@ -409,4 +405,13 @@ fn time_tracking_nvim() -> Result<Dictionary> {
 
     let api = Dictionary::new();
     Ok(api)
+}
+
+/// Plugin to provide time tracking previews while editing in Neovim.
+#[nvim_oxi::plugin]
+fn time_tracking_nvim() -> Result<Dictionary> {
+    // The plugin will generate data on-demand when commands are executed
+    let config = Config::get_no_args();
+
+    time_tracking_with_config(config)
 }

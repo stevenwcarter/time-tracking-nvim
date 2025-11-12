@@ -28,14 +28,39 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Neovim
+        if: matrix.os == 'ubuntu-latest'
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: 'stable'
+
+      - name: Verify Neovim installation
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          nvim --version
+          which nvim
+
       - name: Check formatting
         run: cargo fmt -- --check
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
-      - name: Run tests
+      - name: Run unit tests (main crate)
         run: cargo test
+
+      - name: Setup Xvfb for headless Neovim testing
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Run integration tests
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          chmod +x integration_tests/run_tests.sh
+          xvfb-run -a ./integration_tests/run_tests.sh
 
       - name: Build
         run: cargo build --release
