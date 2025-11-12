@@ -1,0 +1,17 @@
+[package]
+name = "time-tracking-nvim-tests"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nvim-oxi = { version = "0.6.0", features = ["neovim-0-11", "test"] }
+time-tracking-nvim = { path = ".." }
+time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
+tempfile = "3.8"
+time = { version = "0.3", features = ["local-offset"] }
+
+[build-dependencies]
+nvim-oxi = { version = "0.6.0", features = ["neovim-0-11", "test"] }
