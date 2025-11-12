@@ -18,6 +18,7 @@ mod utils;
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => {
+        #[allow(unused_imports)]
         use nvim_oxi::api::types::LogLevel;
         // let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Info, &Default::default());
     };
