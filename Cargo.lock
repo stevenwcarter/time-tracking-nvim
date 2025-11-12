@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "time-tracking-nvim"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "nvim-oxi",
  "time-tracking-cli",

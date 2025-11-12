@@ -19,7 +19,7 @@ mod utils;
 macro_rules! log_info {
     ($($arg:tt)*) => {
         use nvim_oxi::api::types::LogLevel;
-        let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Info, &Default::default());
+        // let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Info, &Default::default());
     };
 }
 
