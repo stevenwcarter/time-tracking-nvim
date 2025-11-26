@@ -4,12 +4,16 @@
 local M = {}
 local uv = vim.uv or vim.loop
 
+-- Plugin version (should match Cargo.toml)
+local PLUGIN_VERSION = "0.1.4"
+
 -- Default configuration
 local default_config = {
 	-- Add any configuration options here
 	-- auto_start = true,
 	-- preview_width = nil, -- Will use 1/3 of screen width
 	auto_download = true, -- Automatically download binaries if missing
+	auto_update = true, -- Automatically update binary when plugin version changes
 }
 
 -- Add the binary directory to Lua's cpath
@@ -74,8 +78,94 @@ local function get_binary_path()
 	return vim.fs.joinpath(plugin_root, "lua", binary_name), platform_info.target
 end
 
+-- Get version file path (stores the version of the downloaded binary)
+local function get_version_file_path()
+	local binary_path = get_binary_path()
+	if not binary_path then
+		return nil
+	end
+	return binary_path .. ".version"
+end
+
+-- Read version from version file
+local function read_binary_version()
+	local version_file = get_version_file_path()
+	if not version_file or vim.fn.filereadable(version_file) ~= 1 then
+		return nil
+	end
+	
+	local content = vim.fn.readfile(version_file)
+	if #content > 0 then
+		return vim.trim(content[1])
+	end
+	return nil
+end
+
+-- Write version to version file
+local function write_binary_version(version)
+	local version_file = get_version_file_path()
+	if not version_file then
+		return false
+	end
+	
+	-- Ensure directory exists
+	local dir = vim.fs.dirname(version_file)
+	vim.fn.mkdir(dir, "p")
+	
+	local success = pcall(vim.fn.writefile, {version}, version_file)
+	return success
+end
+
+-- Compare version strings (basic semver comparison)
+local function is_version_newer(current, new)
+	if not current or not new then
+		return true -- Assume newer if we can't compare
+	end
+	
+	-- Remove 'v' prefix if present
+	current = current:gsub("^v", "")
+	new = new:gsub("^v", "")
+	
+	if current == new then
+		return false
+	end
+	
+	-- Simple string comparison for now (works for semver)
+	-- This handles cases like "0.1.2" vs "0.1.3" correctly
+	local current_parts = {}
+	local new_parts = {}
+	
+	for part in current:gmatch("([^%.]+)") do
+		table.insert(current_parts, tonumber(part) or 0)
+	end
+	
+	for part in new:gmatch("([^%.]+)") do
+		table.insert(new_parts, tonumber(part) or 0)
+	end
+	
+	-- Pad shorter version with zeros
+	local max_len = math.max(#current_parts, #new_parts)
+	for i = #current_parts + 1, max_len do
+		current_parts[i] = 0
+	end
+	for i = #new_parts + 1, max_len do
+		new_parts[i] = 0
+	end
+	
+	-- Compare each part
+	for i = 1, max_len do
+		if new_parts[i] > current_parts[i] then
+			return true
+		elseif new_parts[i] < current_parts[i] then
+			return false
+		end
+	end
+	
+	return false -- Versions are equal
+end
+
 -- Download and extract binary from GitHub releases
-local function download_binary(target, binary_path, callback)
+local function download_binary(target, binary_path, callback, expected_version)
 	-- Get the latest release info
 	local cmd = {
 		"curl",
@@ -178,6 +268,16 @@ local function download_binary(target, binary_path, callback)
 										return
 									end
 
+									-- Store the version information
+									local version_to_store = expected_version or release_info.tag_name or "unknown"
+									if not write_binary_version(version_to_store) then
+										-- Not a fatal error, just warn
+										vim.api.nvim_echo({
+											{ "time-tracking-nvim: ", "WarningMsg" },
+											{ "Warning: Could not save version info", "Normal" },
+										}, false, {})
+									end
+
 									callback(true, "Binary downloaded successfully")
 								end)
 							end)
@@ -210,7 +310,29 @@ function M.setup(opts)
 
 	-- Check if binary exists
 	local binary_exists = vim.fn.filereadable(binary_path) == 1
-
+	
+	-- Check version compatibility
+	local needs_update = false
+	local update_reason = ""
+	
+	if binary_exists then
+		local current_binary_version = read_binary_version()
+		if not current_binary_version then
+			-- No version file found, assume it's an old binary
+			needs_update = true
+			update_reason = "no version information found (updating to track versions)"
+		elseif current_binary_version ~= PLUGIN_VERSION then
+			-- Version mismatch between plugin and binary
+			needs_update = true
+			update_reason = string.format(
+				"version mismatch (plugin: %s, binary: %s)",
+				PLUGIN_VERSION,
+				current_binary_version
+			)
+		end
+	end
+	
+	-- Handle missing binary
 	if not binary_exists and config.auto_download then
 		vim.api.nvim_echo({
 			{ "time-tracking-nvim: ", "Title" },
@@ -293,8 +415,72 @@ function M.setup(opts)
 					},
 				}, false, {})
 			end
-		end)
+		end, PLUGIN_VERSION)
 		return
+	-- Handle version updates for existing binaries
+	elseif needs_update and config.auto_download and config.auto_update then
+		vim.api.nvim_echo({
+			{ "time-tracking-nvim: ", "Title" },
+			{ "Binary update needed (" .. update_reason .. "), downloading...", "Normal" },
+		}, false, {})
+
+		-- Check if we have the required tools
+		local has_curl = vim.fn.executable("curl") == 1
+		local has_tar = vim.fn.executable("tar") == 1
+		local has_unzip = vim.fn.executable("unzip") == 1
+
+		if not has_curl then
+			vim.api.nvim_echo({
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "curl is required for auto-update but not found", "Normal" },
+				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
+			}, false, {})
+		else
+			download_binary(target, binary_path, function(success, message)
+				if success then
+					vim.api.nvim_echo({
+						{ "time-tracking-nvim: ", "MoreMsg" },
+						{ "Binary updated successfully!", "Normal" },
+					}, false, {})
+
+					-- Add binary directory to cpath before trying to load
+					add_to_cpath(binary_path)
+
+					-- Try to load the native module now
+					local ok, native = pcall(require, "time_tracking_nvim")
+					if not ok then
+						vim.api.nvim_echo({
+							{ "time-tracking-nvim: ", "ErrorMsg" },
+							{ "Failed to load native module after update: ", "Normal" },
+							{ native, "ErrorMsg" },
+							{ "\nPlease restart Neovim", "Normal" },
+						}, false, {})
+					else
+						vim.api.nvim_echo({
+							{ "time-tracking-nvim: ", "MoreMsg" },
+							{ "Plugin updated and loaded successfully!", "Normal" },
+						}, false, {})
+					end
+				else
+					vim.api.nvim_echo({
+						{ "time-tracking-nvim: ", "ErrorMsg" },
+						{ "Auto-update failed: ", "Normal" },
+						{ message, "ErrorMsg" },
+						{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
+					}, false, {})
+				end
+			end, PLUGIN_VERSION)
+			return
+		end
+	elseif needs_update and not config.auto_update then
+		vim.api.nvim_echo({
+			{ "time-tracking-nvim: ", "WarningMsg" },
+			{ "Binary version mismatch detected (" .. update_reason .. ")", "Normal" },
+			{ "\nAuto-update is disabled. To update manually, run:", "Normal" },
+			{ "\n  :lua require('time-tracking-nvim').download()", "String" },
+			{ "\nOr enable auto-update with:", "Normal" },
+			{ "\n  require('time-tracking-nvim').setup({ auto_update = true })", "String" },
+		}, false, {})
 	elseif not binary_exists then
 		vim.api.nvim_echo({
 			{ "time-tracking-nvim: ", "ErrorMsg" },
@@ -366,7 +552,46 @@ function M.download()
 				{ "Download failed: " .. message, "Normal" },
 			}, false, {})
 		end
-	end)
+	end, PLUGIN_VERSION)
+end
+
+-- Check version information
+function M.version_info()
+	local binary_path = get_binary_path()
+	if not binary_path then
+		vim.api.nvim_echo({
+			{ "time-tracking-nvim: ", "ErrorMsg" },
+			{ "Cannot determine binary path", "Normal" },
+		}, false, {})
+		return
+	end
+
+	local binary_exists = vim.fn.filereadable(binary_path) == 1
+	local binary_version = read_binary_version() or "unknown"
+	local version_match = binary_version == PLUGIN_VERSION
+
+	vim.api.nvim_echo({
+		{ "time-tracking-nvim version info:", "Title" },
+		{ "\n  Plugin version: ", "Normal" },
+		{ PLUGIN_VERSION, "String" },
+		{ "\n  Binary version: ", "Normal" },
+		{ binary_version, version_match and "String" or "WarningMsg" },
+		{ "\n  Binary exists: ", "Normal" },
+		{ tostring(binary_exists), binary_exists and "String" or "ErrorMsg" },
+		{ "\n  Versions match: ", "Normal" },
+		{ tostring(version_match), version_match and "String" or "WarningMsg" },
+	}, false, {})
+
+	if not binary_exists then
+		vim.api.nvim_echo({
+			{ "\n\nBinary not found. Run setup with auto_download enabled.", "WarningMsg" },
+		}, false, {})
+	elseif not version_match then
+		vim.api.nvim_echo({
+			{ "\n\nVersion mismatch detected!", "WarningMsg" },
+			{ "\nRun :lua require('time-tracking-nvim').download() to update", "Normal" },
+		}, false, {})
+	end
 end
 
 -- Test function to verify the plugin is working
@@ -423,6 +648,9 @@ function M.test()
 		return false
 	end
 
+	local binary_version = read_binary_version() or "unknown"
+	local version_match = binary_version == PLUGIN_VERSION
+	
 	vim.api.nvim_echo({
 		{ "time-tracking-nvim test: ", "MoreMsg" },
 		{ "✓ Plugin is working correctly!", "Normal" },
@@ -430,7 +658,21 @@ function M.test()
 		{ binary_path, "Directory" },
 		{ "\n  Target: ", "Normal" },
 		{ target, "String" },
+		{ "\n  Plugin version: ", "Normal" },
+		{ PLUGIN_VERSION, "String" },
+		{ "\n  Binary version: ", "Normal" },
+		{ binary_version, version_match and "String" or "WarningMsg" },
+		{ "\n  Versions match: ", "Normal" },
+		{ tostring(version_match), version_match and "String" or "WarningMsg" },
 	}, false, {})
+	
+	if not version_match then
+		vim.api.nvim_echo({
+			{ "\n\nWarning: Version mismatch detected!", "WarningMsg" },
+			{ "\nRun :lua require('time-tracking-nvim').download() to update", "Normal" },
+		}, false, {})
+	end
+	
 	return true
 end
 
