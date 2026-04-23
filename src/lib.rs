@@ -62,13 +62,63 @@ where
 /// Plugin to provide time tracking previews while editing in Neovim.
 #[nvim_oxi::plugin]
 fn time_tracking_nvim() -> Result<Dictionary> {
-    panic::catch_unwind(AssertUnwindSafe(|| {
+    {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(b"[ttnvim] entered time_tracking_nvim\n");
+    }
+
+    // Install diagnostic hook to capture the real panic source.
+    panic::set_hook(Box::new(|info| {
+        let msg = format!("[ttnvim] PANIC: {info}\n");
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+    }));
+
+    {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(b"[ttkvim] hook installed, starting catch_unwind\n");
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(b"[ttkvim] inside catch_unwind closure\n");
         let config = Config::try_get_no_args()
             .map_err(|e| nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(e.to_string())))?;
-        time_tracking_with_config(config)
-    }))
-    .map_err(|payload| nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(panic_message(payload))))
-    .flatten()
+        let _ = std::io::stderr().write_all(b"[ttkvim] config loaded, calling time_tracking_with_config\n");
+        let r = time_tracking_with_config(config);
+        {
+            use std::io::Write;
+            match &r {
+                Ok(_) => { let _ = std::io::stderr().write_all(b"[ttkvim] time_tracking_with_config succeeded\n"); }
+                Err(e) => { let _ = std::io::stderr().write_all(format!("[ttkvim] time_tracking_with_config FAILED: {e}\n").as_bytes()); }
+            }
+        }
+        r
+    }));
+
+    {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(b"[ttkvim] catch_unwind returned\n");
+    }
+
+    let _ = panic::take_hook();
+
+    // Never return Err: push_error → lua_error throws a C++ exception on macOS
+    // (LUAJIT_UNWIND_EXTERNAL) which hits the nounwind terminate block → panic_cannot_unwind.
+    match result {
+        Ok(Ok(dict)) => Ok(dict),
+        Ok(Err(e)) => {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(format!("[ttnvim] error: {e}\n").as_bytes());
+            Ok(Dictionary::new())
+        }
+        Err(payload) => {
+            let msg = panic_message(payload);
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(format!("[ttnvim] panic caught: {msg}\n").as_bytes());
+            Ok(Dictionary::new())
+        }
+    }
 }
 
 /// inner function which accepts `config` for testing
