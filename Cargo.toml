@@ -1,8 +1,8 @@
 [package]
 name = "time-tracking-nvim"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
-authors = ["Steven Carter <steve@stevenwcarter.com>"]
+authors = ["Steven W. Carter <steve@carterfam.us>"]
 description = "A high-performance Neovim plugin for time tracking with live preview"
 license = "MIT"
 repository = "https://github.com/stevenwcarter/time-tracking-nvim"
