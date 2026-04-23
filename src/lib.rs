@@ -172,7 +172,10 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::create_autocmd(
         vec!["BufEnter", "WinClosed", "TabEnter"],
         &CreateAutocmdOpts::builder()
-            .command("TimeTrackingMaybeCloseIfInvisible")
+            .callback(|_| {
+                let _ = api::command("TimeTrackingMaybeCloseIfInvisible");
+                Ok::<_, nvim_oxi::Error>(false)
+            })
             .build(),
     )?;
 
@@ -211,7 +214,10 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::create_autocmd(
         vec!["TextChanged", "TextChangedI"],
         &CreateAutocmdOpts::builder()
-            .command("TimeTrackingUpdate")
+            .callback(|_| {
+                let _ = api::command("TimeTrackingUpdate");
+                Ok::<_, nvim_oxi::Error>(false)
+            })
             .build(),
     )?;
 
@@ -220,7 +226,10 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         vec!["VimEnter", "BufWinEnter"],
         &CreateAutocmdOpts::builder()
             .patterns(vec!["*.md"])
-            .command("TimeTrackingAutoOpen")
+            .callback(|_| {
+                let _ = api::command("TimeTrackingAutoOpen");
+                Ok::<_, nvim_oxi::Error>(false)
+            })
             .build(),
     )?;
 
@@ -228,14 +237,20 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::create_autocmd(
         vec!["VimLeavePre"],
         &CreateAutocmdOpts::builder()
-            .command("silent! bwipeout [Time Tracking Preview]")
+            .callback(|_| {
+                let _ = api::command("silent! bwipeout [Time Tracking Preview]");
+                Ok::<_, nvim_oxi::Error>(false)
+            })
             .build(),
     )?;
 
     api::create_autocmd(
         vec!["QuitPre"],
         &CreateAutocmdOpts::builder()
-            .command("TimeTrackingClose")
+            .callback(|_| {
+                let _ = api::command("TimeTrackingClose");
+                Ok::<_, nvim_oxi::Error>(false)
+            })
             .build(),
     )?;
 
