@@ -7,6 +7,6 @@ nvim --version
 
 echo "Starting tests..."
 cd "$(dirname "$0")"
-cargo test --verbose
+cargo test #--verbose
 
 echo "Integration tests completed successfully!"
