@@ -240,7 +240,7 @@ fn test_create_or_update_preview_creates_new_buffer() {
     // Ensure we start with no preview buffer
     let mut initial_buffers = api::list_bufs();
     let has_preview_initially = initial_buffers.any(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     });
     assert!(!has_preview_initially, "Should start without preview buffer");
     
@@ -251,14 +251,14 @@ fn test_create_or_update_preview_creates_new_buffer() {
     // Verify preview buffer was created
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     });
     assert!(preview_buffer.is_some(), "Preview buffer should be created");
     
     // Verify buffer content
     let buf = preview_buffer.unwrap();
     let lines: Vec<String> = buf.get_lines(.., false).unwrap()
-        .map(|s| s.to_string_lossy().into())
+        .map(|s| s.to_string())
         .collect();
     let content = lines.join("\n");
     assert_eq!(content, test_output, "Buffer content should match input");
@@ -275,7 +275,7 @@ fn test_create_or_update_preview_updates_existing_buffer() {
     // Verify initial content
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).expect("Preview buffer should exist");
     
     // Update preview
@@ -284,7 +284,7 @@ fn test_create_or_update_preview_updates_existing_buffer() {
     
     // Verify updated content
     let lines: Vec<String> = preview_buffer.get_lines(.., false).unwrap()
-        .map(|s| s.to_string_lossy().into())
+        .map(|s| s.to_string())
         .collect();
     let content = lines.join("\n");
     assert_eq!(content, updated_output, "Buffer content should be updated");
@@ -300,7 +300,7 @@ fn test_create_or_update_preview_with_empty_output() {
     // Verify buffer was created with empty content
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     });
     assert!(preview_buffer.is_some(), "Preview buffer should be created even with empty content");
 }
@@ -314,12 +314,12 @@ fn test_create_or_update_preview_buffer_options() {
     // Find the preview buffer
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).expect("Preview buffer should exist");
     
     // Check buffer options
     let bopts = nvim_oxi::api::opts::OptionOptsBuilder::default()
-        .buffer(preview_buffer.clone())
+        .buf(preview_buffer.clone())
         .build();
     
     let buflisted: bool = api::get_option_value("buflisted", &bopts).unwrap();
@@ -392,11 +392,11 @@ fn test_create_or_update_preview_with_multiline_content() {
     // Verify content is preserved correctly
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).expect("Preview buffer should exist");
     
     let lines: Vec<String> = preview_buffer.get_lines(.., false).unwrap()
-        .map(|s| s.to_string_lossy().into())
+        .map(|s| s.to_string())
         .collect();
     let content = lines.join("\n");
     assert_eq!(content, multiline_output, "Multiline content should be preserved");
@@ -416,11 +416,11 @@ fn test_create_or_update_preview_handles_special_characters() {
     // Verify content is preserved
     let mut buffers = api::list_bufs();
     let preview_buffer = buffers.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).expect("Preview buffer should exist");
-    
+
     let lines: Vec<String> = preview_buffer.get_lines(.., false).unwrap()
-        .map(|s| s.to_string_lossy().into())
+        .map(|s| s.to_string())
         .collect();
     let content = lines.join("\n");
     assert_eq!(content, special_content, "Special characters should be preserved");
@@ -431,7 +431,7 @@ fn cleanup_preview_buffers() {
     let buffers = api::list_bufs();
     for buf in buffers {
         if let Ok(name) = buf.get_name() {
-            if name.ends_with("[Time Tracking Preview]") {
+            if name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")) {
                 let _ = buf.delete(&nvim_oxi::api::opts::BufDeleteOpts::builder().force(true).build());
             }
         }
@@ -451,7 +451,7 @@ fn test_multiple_preview_creation_updates_same_buffer() {
     
     let buffers_after_first = api::list_bufs();
     let preview_count_1 = buffers_after_first.filter(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).count();
     assert_eq!(preview_count_1, 1, "Should have exactly one preview buffer after first creation");
     
@@ -460,7 +460,7 @@ fn test_multiple_preview_creation_updates_same_buffer() {
     
     let buffers_after_second = api::list_bufs();
     let preview_count_2 = buffers_after_second.filter(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).count();
     assert_eq!(preview_count_2, 1, "Should still have exactly one preview buffer after update");
     
@@ -469,18 +469,18 @@ fn test_multiple_preview_creation_updates_same_buffer() {
     
     let buffers_after_third = api::list_bufs();
     let preview_count_3 = buffers_after_third.filter(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).count();
     assert_eq!(preview_count_3, 1, "Should still have exactly one preview buffer after second update");
     
     // Verify final content - need to get buffers again since we consumed the iterator
     let mut buffers_final = api::list_bufs();
     let preview_buffer = buffers_final.find(|buf| {
-        buf.get_name().map(|name| name.ends_with("[Time Tracking Preview]")).unwrap_or(false)
+        buf.get_name().map(|name| name.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))).unwrap_or(false)
     }).expect("Preview buffer should exist");
     
     let lines: Vec<String> = preview_buffer.get_lines(.., false).unwrap()
-        .map(|s| s.to_string_lossy().into())
+        .map(|s| s.to_string())
         .collect();
     let content = lines.join("\n");
     assert_eq!(content, content3, "Should have the latest content");

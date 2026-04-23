@@ -18,6 +18,7 @@ use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_fi
 mod preview;
 pub mod utils;
 
+pub use preview::create_or_update_preview;
 use preview::*;
 
 #[macro_export]
