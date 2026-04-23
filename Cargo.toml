@@ -22,10 +22,10 @@ crate-type = ["cdylib", "rlib"]
 name = "time_tracking_nvim"
 
 [dependencies]
-nvim-oxi = { version = "0.6.0", features = ["neovim-0-11"] }
-time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
+nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
+    "neovim-0-12",
+] }
+time-tracking-cli = { path = "../time-tracking-cli", default-features = false }
 
 [workspace]
 exclude = ["integration_tests"]
-
-

@@ -1,4 +1,7 @@
+use std::panic::{self, AssertUnwindSafe};
+
 use nvim_oxi::api::opts::OptionOptsBuilder;
+use nvim_oxi::api::types::CommandArgs;
 use nvim_oxi::api::{Buffer, Window};
 use nvim_oxi::schedule;
 use nvim_oxi::{
@@ -29,42 +32,74 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
-        use nvim_oxi::api::types::LogLevel;
-        let _ = nvim_oxi::api::notify(&format!($($arg)*), LogLevel::Error, &Default::default());
+        nvim_oxi::api::err_writeln(&format!($($arg)*));
     };
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "time-tracking-nvim: unknown panic".to_owned()
+    }
+}
+
+fn catch_nvim_panic<F>(f: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    panic::catch_unwind(AssertUnwindSafe(f))
+        .map_err(|payload| {
+            let msg = panic_message(payload);
+            api::err_writeln(&format!("[time-tracking-nvim] panic: {}", msg));
+            nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(msg))
+        })
+        .flatten()
 }
 
 /// Plugin to provide time tracking previews while editing in Neovim.
 #[nvim_oxi::plugin]
 fn time_tracking_nvim() -> Result<Dictionary> {
-    // The plugin will generate data on-demand when commands are executed
-    let config = Config::get_no_args();
-
-    time_tracking_with_config(config)
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let config = Config::try_get_no_args()
+            .map_err(|e| nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(e.to_string())))?;
+        time_tracking_with_config(config)
+    }))
+    .map_err(|payload| nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(panic_message(payload))))
+    .flatten()
 }
 
 /// inner function which accepts `config` for testing
 pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> {
     // Create command to toggle preview
-    let toggle_preview = Function::from_fn(move |_| toggle_preview_fn(config));
+    let toggle_preview =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| toggle_preview_fn(config)));
 
     // Create command to update preview (for auto-updating)
-    let update_preview = Function::from_fn(move |_| update_preview_fn(config));
+    let update_preview =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| update_preview_fn(config)));
 
     // Create command to auto-open preview
-    let auto_open = Function::from_fn(move |_| auto_open_preview(config));
+    let auto_open =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_open_preview(config)));
 
     // Create command to auto-close preview
-    let auto_close = Function::from_fn(move |_| auto_close_preview(config));
+    let auto_close =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_close_preview(config)));
 
     // Create command to manually close preview window
-    let close_preview_cmd = Function::from_fn(move |_| close_preview());
+    let close_preview_cmd =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(close_preview));
 
-    let maybe_close_if_invisible = Function::from_fn(move |_| -> Result<()> {
-        if !any_tracking_visible(config)? {
-            close_preview()?;
-        }
-        Ok(())
+    let maybe_close_if_invisible = Function::from_fn(move |_: CommandArgs| {
+        catch_nvim_panic(|| {
+            if !any_tracking_visible(config)? {
+                close_preview()?;
+            }
+            Ok(())
+        })
     });
 
     api::create_user_command(
@@ -146,10 +181,12 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
 
     // Scheduled to delay until startup is complete
     schedule(|_| {
-        let result = api::command("TimeTrackingAutoOpen");
-        if let Err(e) = result {
-            log_error!("Issue running auto-open on start-up {:?}", e);
-        }
+        catch_nvim_panic(|| {
+            api::command("TimeTrackingAutoOpen").map_err(|e| {
+                log_error!("Issue running auto-open on start-up {:?}", e);
+                nvim_oxi::Error::Api(e)
+            })
+        })
     });
 
     let api = Dictionary::new();

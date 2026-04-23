@@ -14,7 +14,10 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     for win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
-        if buf_name.ends_with("[Time Tracking Preview]") {
+        if buf_name
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             has_preview = true;
             break;
         }
@@ -49,7 +52,10 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
     for win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
-        if buf_name.ends_with("[Time Tracking Preview]") {
+        if buf_name
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             has_preview = true;
             break;
         }
@@ -79,7 +85,10 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
     // Find an existing preview buffer
     let mut preview: Option<Buffer> = None;
     for b in api::list_bufs() {
-        if b.get_name()?.ends_with("[Time Tracking Preview]") {
+        if b.get_name()?
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             preview = Some(b);
             break;
         }
@@ -93,7 +102,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
             b.set_name("[Time Tracking Preview]")?;
 
             // Keep it unlisted and non-modifiable by default (DO NOT set 'readonly')
-            let bopts = OptionOptsBuilder::default().buffer(b.clone()).build();
+            let bopts = OptionOptsBuilder::default().buf(b.clone()).build();
             api::set_option_value("buflisted", false, &bopts)?;
             api::set_option_value("modifiable", false, &bopts)?;
             api::set_option_value("bufhidden", "wipe", &bopts)?;
@@ -104,7 +113,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
     // Update buffer contents safely by toggling only 'modifiable'
     {
-        let bopts = OptionOptsBuilder::default().buffer(buf.clone()).build();
+        let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
         api::set_option_value("modifiable", true, &bopts)?;
         let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
         buf.set_lines(0..buf.line_count()?, false, lines)?;
@@ -169,7 +178,10 @@ pub fn close_preview() -> Result<()> {
     for win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
-        if buf_name.ends_with("[Time Tracking Preview]") {
+        if buf_name
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             win.close(false)?;
             break;
         }
@@ -208,7 +220,10 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     for win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
-        if buf_name.ends_with("[Time Tracking Preview]") {
+        if buf_name
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             has_preview = true;
             break;
         }
@@ -252,7 +267,10 @@ pub fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
     for win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
-        if buf_name.ends_with("[Time Tracking Preview]") {
+        if buf_name
+            .to_str()
+            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+        {
             log_info!("Auto-closing preview (leaving markdown file)\n");
             win.close(false)?;
             break;
