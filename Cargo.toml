@@ -25,7 +25,7 @@ name = "time_tracking_nvim"
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
     "neovim-0-12",
 ] }
-time-tracking-cli = { path = "../time-tracking-cli", default-features = false }
+time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
 
 [workspace]
 exclude = ["integration_tests"]
