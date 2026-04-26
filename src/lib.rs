@@ -73,10 +73,7 @@ where
 /// Plugin to provide time tracking previews while editing in Neovim.
 #[nvim_oxi::plugin]
 fn time_tracking_nvim() -> Result<Dictionary> {
-    {
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(b"[ttnvim] entered time_tracking_nvim\n");
-    }
+    debug_log!("[ttnvim] entered time_tracking_nvim\n");
 
     // Install diagnostic hook to capture the real panic source.
     panic::set_hook(Box::new(|info| {
@@ -85,40 +82,29 @@ fn time_tracking_nvim() -> Result<Dictionary> {
         let _ = std::io::stderr().write_all(msg.as_bytes());
     }));
 
-    {
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(b"[ttkvim] hook installed, starting catch_unwind\n");
-    }
+    debug_log!("[ttkvim] hook installed, starting catch_unwind\n");
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(b"[ttkvim] inside catch_unwind closure\n");
+        debug_log!("[ttkvim] inside catch_unwind closure\n");
         let config = Config::try_get_no_args()
             .map_err(|e| nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(e.to_string())))?;
-        let _ = std::io::stderr()
-            .write_all(b"[ttkvim] config loaded, calling time_tracking_with_config\n");
+        debug_log!("[ttkvim] config loaded, calling time_tracking_with_config\n");
         let r = time_tracking_with_config(config);
-        {
-            use std::io::Write;
-            match &r {
-                Ok(_) => {
-                    let _ = std::io::stderr()
-                        .write_all(b"[ttkvim] time_tracking_with_config succeeded\n");
-                }
-                Err(e) => {
-                    let _ = std::io::stderr().write_all(
-                        format!("[ttkvim] time_tracking_with_config FAILED: {e}\n").as_bytes(),
-                    );
-                }
+        match &r {
+            Ok(_) => {
+                debug_log!("[ttkvim] time_tracking_with_config succeeded\n");
+            }
+            Err(e) => {
+                use std::io::Write;
+                let _ = std::io::stderr().write_all(
+                    format!("[ttkvim] time_tracking_with_config FAILED: {e}\n").as_bytes(),
+                );
             }
         }
         r
     }));
 
-    {
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(b"[ttkvim] catch_unwind returned\n");
-    }
+    debug_log!("[ttkvim] catch_unwind returned\n");
 
     let _ = panic::take_hook();
 
