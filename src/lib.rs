@@ -37,6 +37,16 @@ macro_rules! log_error {
     };
 }
 
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("TIME_TRACKING_DEBUG").is_ok() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(format!($($arg)*).as_bytes());
+        }
+    };
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
