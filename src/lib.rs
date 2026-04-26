@@ -6,10 +6,7 @@ use nvim_oxi::api::{Buffer, Window};
 use nvim_oxi::schedule;
 use nvim_oxi::{
     Dictionary, Function, Result,
-    api::{
-        self,
-        opts::{CreateAutocmdOpts, CreateCommandOpts},
-    },
+    api::{self, opts::CreateCommandOpts},
 };
 use time_tracking_cli::Config;
 
@@ -164,17 +161,6 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         &CreateCommandOpts::builder().build(),
     )?;
 
-    // Fire when views/layouts tend to change
-    api::create_autocmd(
-        vec!["BufEnter", "WinClosed", "TabEnter"],
-        &CreateAutocmdOpts::builder()
-            .callback(|_| {
-                let _ = api::command("TimeTrackingMaybeCloseIfInvisible");
-                Ok::<_, nvim_oxi::Error>(false)
-            })
-            .build(),
-    )?;
-
     // Register commands
     api::create_user_command(
         "TimeTrackingToggle",
@@ -206,49 +192,15 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         &CreateCommandOpts::builder().build(),
     )?;
 
-    // Set up autocommands for live updates on markdown files
-    api::create_autocmd(
-        vec!["TextChanged", "TextChangedI"],
-        &CreateAutocmdOpts::builder()
-            .callback(|_| {
-                let _ = api::command("TimeTrackingUpdate");
-                Ok::<_, nvim_oxi::Error>(false)
-            })
-            .build(),
-    )?;
-
-    // Set up autocommand to auto-open preview after Neovim fully starts
-    api::create_autocmd(
-        vec!["VimEnter", "BufWinEnter"],
-        &CreateAutocmdOpts::builder()
-            .patterns(vec!["*.md"])
-            .callback(|_| {
-                let _ = api::command("TimeTrackingAutoOpen");
-                Ok::<_, nvim_oxi::Error>(false)
-            })
-            .build(),
-    )?;
-
-    // Set up autocommand to close preview window when quitting Neovim
-    api::create_autocmd(
-        vec!["VimLeavePre"],
-        &CreateAutocmdOpts::builder()
-            .callback(|_| {
-                let _ = api::command("silent! bwipeout [Time Tracking Preview]");
-                Ok::<_, nvim_oxi::Error>(false)
-            })
-            .build(),
-    )?;
-
-    api::create_autocmd(
-        vec!["QuitPre"],
-        &CreateAutocmdOpts::builder()
-            .callback(|_| {
-                let _ = api::command("TimeTrackingClose");
-                Ok::<_, nvim_oxi::Error>(false)
-            })
-            .build(),
-    )?;
+    // Register autocommands via Vimscript to avoid nvim-oxi keyset mask mismatch on 0.12.2+
+    api::command("augroup TimeTrackingNvim")?;
+    api::command("autocmd!")?;
+    api::command("autocmd BufEnter,WinClosed,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
+    api::command("autocmd TextChanged,TextChangedI * TimeTrackingUpdate")?;
+    api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
+    api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
+    api::command("autocmd QuitPre * TimeTrackingClose")?;
+    api::command("augroup END")?;
 
     // Scheduled to delay until startup is complete
     schedule(|_| {
