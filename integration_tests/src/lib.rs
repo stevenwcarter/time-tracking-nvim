@@ -2,24 +2,19 @@ use nvim_oxi::api;
 use std::fs::{self, File};
 use std::io::Write;
 use tempfile::TempDir;
-use time_tracking_cli::{Config, config::Formatter};
+use time_tracking_cli::Config;
 use time_tracking_nvim::utils::*;
 
 // Helper function to create a test config with a temporary directory
 fn create_test_config_with_temp_dir() -> (Config, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
+    // Only the fields these tests actually depend on are spelled out; the rest
+    // come from Config::default() so that new upstream fields don't break the
+    // build here.
     let config = Config {
-        formatter: Some(Formatter::Default),
-        week_start_day: Some("Saturday".to_string()),
         data_directory: Some(temp_dir.path().to_str().unwrap().to_string()),
-        template_file: None,
-        prefix: None,
-        suffix: None,
-        stdin: false,
-        serve: Some(false),
         date: time::Date::from_calendar_date(2024, time::Month::January, 1).unwrap(),
-        noedit: false,
-        week: false,
+        ..Default::default()
     };
     (config, temp_dir)
 }
