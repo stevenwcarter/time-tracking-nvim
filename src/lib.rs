@@ -15,8 +15,11 @@ use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_fi
 mod preview;
 pub mod utils;
 
-pub use preview::create_or_update_preview;
 use preview::*;
+pub use preview::{
+    auto_open_preview, close_preview, create_or_update_preview, toggle_preview_fn,
+    update_preview_fn,
+};
 
 #[macro_export]
 macro_rules! log_info {

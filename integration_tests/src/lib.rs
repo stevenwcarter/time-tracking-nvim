@@ -625,3 +625,33 @@ fn test_data_dir_miss_is_not_cached() {
     );
 }
 
+#[nvim_oxi::test]
+fn test_auto_open_does_not_block_the_event_loop() {
+    use std::time::Instant;
+
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    // A buffer that is NOT a tracking file: the old code slept 200ms *before*
+    // even checking, so this cost the full delay for every unrelated markdown
+    // buffer at VimEnter/BufWinEnter.
+    let other = TempDir::new().unwrap();
+    let md = create_test_file(other.path(), "README.md", "# Unrelated");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let start = Instant::now();
+    for _ in 0..3 {
+        time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    }
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 150,
+        "three auto-open calls on a non-tracking buffer took {:?}; the \
+         blocking thread::sleep is still on the event-loop thread",
+        elapsed
+    );
+}
+

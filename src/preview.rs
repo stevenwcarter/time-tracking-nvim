@@ -203,10 +203,10 @@ pub fn auto_open_preview(config: &'static Config) -> Result<()> {
 }
 
 pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
-    // Add a small delay to avoid race conditions with window operations
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Check if this is a time tracking file
+    // No delay here: this runs on Neovim's single event-loop thread, so
+    // sleeping cannot let a pending window operation complete — it is exactly
+    // what prevents it. The split-during-close race is handled by the E242
+    // guard in create_or_update_preview and the empty-window-list bail.
     let is_tracking = is_time_tracking_file(config)?;
     if !is_tracking {
         log_info!("[TimeTracking] Auto-open: Not a tracking file");
@@ -257,9 +257,6 @@ pub fn auto_close_preview(config: &'static Config) -> Result<()> {
 }
 
 pub fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
-    // Add a small delay to avoid race conditions with window operations
-    std::thread::sleep(std::time::Duration::from_millis(30));
-
     // Always close the preview when BufLeave is triggered for a markdown file
     // The autocommand pattern ensures we only get called for .md files
     // Check if preview window exists and close it
