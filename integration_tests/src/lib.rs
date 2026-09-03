@@ -1040,3 +1040,15 @@ fn test_recreated_preview_always_gets_a_full_write() {
         "a wiped-and-recreated preview must be written in full"
     );
 }
+
+#[nvim_oxi::test]
+fn test_successful_init_returns_a_dictionary_without_an_error_key() {
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let dict = time_tracking_with_config(config_static).unwrap();
+    assert!(
+        dict.get("error").is_none(),
+        "a successful init must not advertise an error"
+    );
+}

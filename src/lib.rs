@@ -110,21 +110,24 @@ fn time_tracking_nvim() -> Result<Dictionary> {
 
     // Never return Err: push_error → lua_error throws a C++ exception on macOS
     // (LUAJIT_UNWIND_EXTERNAL) which hits the nounwind terminate block → panic_cannot_unwind.
+    // Report the failure through the returned dictionary and :messages instead,
+    // so the Lua layer can stop claiming success.
     match result {
         Ok(Ok(dict)) => Ok(dict),
-        Ok(Err(e)) => {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(format!("[ttnvim] error: {e}\n").as_bytes());
-            Ok(Dictionary::new())
-        }
-        Err(payload) => {
-            let msg = panic_message(payload);
-            use std::io::Write;
-            let _ =
-                std::io::stderr().write_all(format!("[ttnvim] panic caught: {msg}\n").as_bytes());
-            Ok(Dictionary::new())
-        }
+        Ok(Err(e)) => Ok(init_failure_dict(&format!("{e}"))),
+        Err(payload) => Ok(init_failure_dict(&panic_message(payload))),
     }
+}
+
+/// Build the dictionary returned when initialization failed, and make the
+/// reason visible in `:messages` — without it the user gets a plugin that
+/// loads cleanly, registers nothing, and answers `:TimeTrackingToggle` with
+/// `E492: Not an editor command`.
+fn init_failure_dict(msg: &str) -> Dictionary {
+    api::err_writeln(&format!("[time-tracking-nvim] failed to initialize: {msg}"));
+    debug_log!("[ttnvim] init failed: {}\n", msg);
+
+    Dictionary::from_iter([("error", msg)])
 }
 
 /// inner function which accepts `config` for testing

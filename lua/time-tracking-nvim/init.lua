@@ -384,10 +384,17 @@ function M.setup(opts)
 						{ "\nPlease check the binary permissions and try restarting Neovim", "Normal" },
 					}, false, {})
 				else
-					vim.api.nvim_echo({
-						{ "time-tracking-nvim: ", "MoreMsg" },
-						{ "Plugin loaded successfully!", "Normal" },
-					}, false, {})
+					if type(native) == "table" and native.error then
+						vim.api.nvim_echo({
+							{ "time-tracking-nvim: ", "ErrorMsg" },
+							{ "Loaded but failed to initialize: " .. tostring(native.error), "Normal" },
+						}, false, {})
+					else
+						vim.api.nvim_echo({
+							{ "time-tracking-nvim: ", "MoreMsg" },
+							{ "Plugin loaded successfully!", "Normal" },
+						}, false, {})
+					end
 				end
 			else
 				vim.api.nvim_echo({
@@ -456,10 +463,17 @@ function M.setup(opts)
 							{ "\nPlease restart Neovim", "Normal" },
 						}, false, {})
 					else
-						vim.api.nvim_echo({
-							{ "time-tracking-nvim: ", "MoreMsg" },
-							{ "Plugin updated and loaded successfully!", "Normal" },
-						}, false, {})
+						if type(native) == "table" and native.error then
+							vim.api.nvim_echo({
+								{ "time-tracking-nvim: ", "ErrorMsg" },
+								{ "Loaded but failed to initialize: " .. tostring(native.error), "Normal" },
+							}, false, {})
+						else
+							vim.api.nvim_echo({
+								{ "time-tracking-nvim: ", "MoreMsg" },
+								{ "Plugin updated and loaded successfully!", "Normal" },
+							}, false, {})
+						end
 					end
 				else
 					vim.api.nvim_echo({
@@ -506,6 +520,15 @@ function M.setup(opts)
 			{ "time-tracking-nvim: ", "ErrorMsg" },
 			{ "Failed to load native module: " .. native, "Normal" },
 			{ "\nMake sure the plugin is properly installed and the dynamic library is available", "Normal" },
+		}, false, {})
+		return
+	end
+
+	if type(native) == "table" and native.error then
+		vim.api.nvim_echo({
+			{ "time-tracking-nvim: ", "ErrorMsg" },
+			{ "Native module loaded but failed to initialize: " .. tostring(native.error), "Normal" },
+			{ "\nNo commands were registered. Check your time-tracking-cli configuration.", "Normal" },
 		}, false, {})
 		return
 	end
