@@ -12,6 +12,22 @@ thread_local! {
     static PREVIEW_BUF: RefCell<Option<Buffer>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// The last output successfully written to the preview buffer.
+    ///
+    /// Cleared whenever the preview buffer is created or destroyed, so a
+    /// wiped-and-recreated preview always gets a full write.
+    static LAST_OUTPUT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_last_output(output: Option<String>) {
+    LAST_OUTPUT.with(|cell| *cell.borrow_mut() = output);
+}
+
+fn last_output_matches(output: &str) -> bool {
+    LAST_OUTPUT.with(|cell| cell.borrow().as_deref() == Some(output))
+}
+
 fn cached_preview_buf() -> Option<Buffer> {
     PREVIEW_BUF.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -163,17 +179,21 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
             api::set_option_value("bufhidden", "wipe", &bopts)?;
             api::set_option_value("swapfile", false, &bopts)?;
             set_cached_preview_buf(Some(b.clone()));
+            set_last_output(None);
             b
         }
     };
 
-    // Update buffer contents safely by toggling only 'modifiable'
-    {
+    // Update buffer contents, skipping the rewrite when nothing changed.
+    // The rendered day summary is unchanged for most keystrokes, and rewriting
+    // yanks the preview's scroll position and repaints the whole split.
+    if !(last_output_matches(output) && buf.is_valid()) {
         let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
         api::set_option_value("modifiable", true, &bopts)?;
         let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
         buf.set_lines(0..buf.line_count()?, false, lines)?;
         api::set_option_value("modifiable", false, &bopts)?;
+        set_last_output(Some(output.to_owned()));
     }
 
     // Is the preview buffer already shown? `find_preview` resolved that above;
@@ -256,6 +276,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 pub fn close_preview() -> Result<()> {
     let Some((_, Some(mut win))) = find_preview()? else {
         set_cached_preview_buf(None);
+        set_last_output(None);
         return Ok(());
     };
 
@@ -292,6 +313,7 @@ pub fn close_preview() -> Result<()> {
     }
 
     set_cached_preview_buf(None);
+    set_last_output(None);
     Ok(())
 }
 

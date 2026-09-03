@@ -920,3 +920,72 @@ fn test_preview_cache_survives_a_wiped_buffer() {
         .collect();
     assert_eq!(lines, vec!["second".to_string()]);
 }
+
+#[nvim_oxi::test]
+fn test_identical_output_does_not_rewrite_the_preview_buffer() {
+    cleanup_preview_buffers();
+
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+    let buf = api::list_bufs()
+        .find(|b| {
+            b.get_name()
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("preview buffer should exist");
+
+    let tick_after_first = buf.get_changedtick().unwrap();
+
+    // The overwhelming majority of keystrokes leave the rendered summary
+    // unchanged; rewriting yanks scroll position and repaints the split.
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+    assert_eq!(
+        buf.get_changedtick().unwrap(),
+        tick_after_first,
+        "an identical render must not rewrite the buffer"
+    );
+
+    // A genuinely different render must still write.
+    create_or_update_preview("# Summary\n- total: 2h").unwrap();
+    assert!(
+        buf.get_changedtick().unwrap() > tick_after_first,
+        "a changed render must write"
+    );
+
+    let lines: Vec<String> = buf
+        .get_lines(.., false)
+        .unwrap()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(lines, vec!["# Summary".to_string(), "- total: 2h".to_string()]);
+}
+
+#[nvim_oxi::test]
+fn test_recreated_preview_always_gets_a_full_write() {
+    cleanup_preview_buffers();
+
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+    // Wipe it, then render the SAME content: a stale output cache would skip
+    // the write and leave the new buffer empty.
+    cleanup_preview_buffers();
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    let buf = api::list_bufs()
+        .find(|b| {
+            b.get_name()
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("preview buffer should exist");
+
+    let lines: Vec<String> = buf
+        .get_lines(.., false)
+        .unwrap()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["# Summary".to_string(), "- total: 1h".to_string()],
+        "a wiped-and-recreated preview must be written in full"
+    );
+}
