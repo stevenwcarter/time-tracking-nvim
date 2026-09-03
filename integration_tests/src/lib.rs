@@ -655,3 +655,30 @@ fn test_auto_open_does_not_block_the_event_loop() {
     );
 }
 
+#[nvim_oxi::test]
+fn test_toggle_outside_data_dir_creates_no_preview_and_returns_ok() {
+    cleanup_preview_buffers();
+
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let other = TempDir::new().unwrap();
+    let md = create_test_file(other.path(), "notes.md", "# Unrelated");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let result = time_tracking_nvim::toggle_preview_fn(config_static);
+    assert!(result.is_ok(), "toggle must not error: {:?}", result);
+
+    let has_preview = api::list_bufs().any(|b| {
+        b.get_name()
+            .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+            .unwrap_or(false)
+    });
+    assert!(
+        !has_preview,
+        "toggling outside the data directory must not create a preview"
+    );
+}
+

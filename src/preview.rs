@@ -3,7 +3,23 @@ use super::*;
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     // Check if this is a time tracking file
     if !is_time_tracking_file(config)? {
-        // Just return silently if not a time tracking file
+        // The user typed :TimeTrackingToggle explicitly, and README names this
+        // as the first troubleshooting step — so unlike the autocommand-driven
+        // paths, say why nothing happened.
+        let buffer_name = api::get_current_buf()
+            .get_name()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| String::new());
+        log_error!(
+            "[time-tracking-nvim] {} is not a tracking file (data directory: {:?}). \
+             Tracking files are .md files inside the data directory.",
+            if buffer_name.is_empty() {
+                "[No Name]"
+            } else {
+                &buffer_name
+            },
+            config.get_data_directory().unwrap_or("<unset>")
+        );
         return Ok(());
     }
 
