@@ -173,6 +173,18 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         let wopts = OptionOptsBuilder::default().win(win.clone()).build();
         let _ = api::set_option_value("winfixwidth", true, &wopts);
 
+        // A vsplit copies the source window's local options, so an ordinary
+        // `set number relativenumber list signcolumn=yes` config eats 6-8 of
+        // the preview's ~26 columns. Style it as the scratch preview it is.
+        let _ = api::set_option_value("number", false, &wopts);
+        let _ = api::set_option_value("relativenumber", false, &wopts);
+        let _ = api::set_option_value("wrap", false, &wopts);
+        let _ = api::set_option_value("signcolumn", "no", &wopts);
+        let _ = api::set_option_value("foldcolumn", "0", &wopts);
+        let _ = api::set_option_value("cursorline", false, &wopts);
+        let _ = api::set_option_value("spell", false, &wopts);
+        let _ = api::set_option_value("list", false, &wopts);
+
         // Make it ~1/3 of the screen (columns is global; default opts OK)
         if let Ok(total_cols) =
             api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())

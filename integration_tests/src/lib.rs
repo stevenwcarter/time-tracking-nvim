@@ -717,3 +717,54 @@ fn test_close_preview_when_it_is_the_last_window() {
     );
 }
 
+#[nvim_oxi::test]
+fn test_preview_window_is_styled_as_a_scratch_preview() {
+    use nvim_oxi::api::opts::OptionOptsBuilder;
+
+    cleanup_preview_buffers();
+
+    // A vsplit copies the source window's local options, so set the
+    // near-ubiquitous ones on the source first.
+    let sopts = OptionOptsBuilder::default().win(api::get_current_win()).build();
+    let orig_number: bool = api::get_option_value("number", &sopts).unwrap();
+    let orig_wrap: bool = api::get_option_value("wrap", &sopts).unwrap();
+    let orig_signcolumn: String = api::get_option_value("signcolumn", &sopts).unwrap();
+    api::set_option_value("number", true, &sopts).unwrap();
+    api::set_option_value("wrap", true, &sopts).unwrap();
+    api::set_option_value("signcolumn", "yes", &sopts).unwrap();
+
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    let preview_win = api::list_wins()
+        .find(|w| {
+            w.get_buf()
+                .and_then(|b| b.get_name())
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("preview window should exist");
+
+    let wopts = OptionOptsBuilder::default().win(preview_win).build();
+    assert!(
+        !api::get_option_value::<bool>("number", &wopts).unwrap(),
+        "the preview must not show line numbers"
+    );
+    assert!(
+        !api::get_option_value::<bool>("wrap", &wopts).unwrap(),
+        "the preview must not soft-wrap"
+    );
+    assert_eq!(
+        api::get_option_value::<String>("signcolumn", &wopts).unwrap(),
+        "no",
+        "the preview must not reserve a sign column"
+    );
+
+    // Restore the source window's options and collapse back to one window so
+    // later tests in this shared Neovim instance do not inherit this test's
+    // window-local state.
+    api::set_option_value("number", orig_number, &sopts).unwrap();
+    api::set_option_value("wrap", orig_wrap, &sopts).unwrap();
+    api::set_option_value("signcolumn", orig_signcolumn.as_str(), &sopts).unwrap();
+    api::command("only").unwrap();
+}
+
