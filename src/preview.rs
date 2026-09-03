@@ -30,6 +30,47 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
     PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
 }
 
+/// Resolve the preview buffer and the window showing it, in one pass.
+///
+/// Returns `None` when no preview buffer exists; `Some((buf, None))` when the
+/// buffer exists but is not displayed. Consolidates the six copies of this
+/// lookup and gives the handle cache a single invalidation point.
+fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
+    let buf = match cached_preview_buf() {
+        Some(buf) => Some(buf),
+        None => {
+            let mut found = None;
+            for b in api::list_bufs() {
+                if b.get_name()?
+                    .to_str()
+                    .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+                {
+                    found = Some(b);
+                    break;
+                }
+            }
+            if let Some(ref b) = found {
+                set_cached_preview_buf(Some(b.clone()));
+            }
+            found
+        }
+    };
+
+    let Some(buf) = buf else {
+        return Ok(None);
+    };
+
+    let mut window = None;
+    for w in api::list_wins() {
+        if w.get_buf()? == buf {
+            window = Some(w);
+            break;
+        }
+    }
+
+    Ok(Some((buf, window)))
+}
+
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     // Check if this is a time tracking file
     if !is_time_tracking_file(config)? {
@@ -54,20 +95,7 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     }
 
     // Check if preview window exists
-    let windows = api::list_wins();
-    let mut has_preview = false;
-
-    for win in windows {
-        let buf = win.get_buf()?;
-        let buf_name = buf.get_name()?;
-        if buf_name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            has_preview = true;
-            break;
-        }
-    }
+    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
     if has_preview {
         close_preview()?;
@@ -92,20 +120,7 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
     }
 
     // Check if preview window exists
-    let windows = api::list_wins();
-    let mut has_preview = false;
-
-    for win in windows {
-        let buf = win.get_buf()?;
-        let buf_name = buf.get_name()?;
-        if buf_name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            has_preview = true;
-            break;
-        }
-    }
+    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
     if has_preview {
         let buffer_content = get_buffer_content()?;
@@ -128,21 +143,11 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Find an existing preview buffer, preferring the cached handle.
-    let preview: Option<Buffer> = cached_preview_buf().or_else(|| {
-        let found = api::list_bufs().find(|b| {
-            b.get_name()
-                .map(|n| {
-                    n.to_str()
-                        .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-                })
-                .unwrap_or(false)
-        });
-        if let Some(ref b) = found {
-            set_cached_preview_buf(Some(b.clone()));
-        }
-        found
-    });
+    // Resolve the preview buffer and the window showing it in a single pass.
+    let (preview, preview_win) = match find_preview()? {
+        Some((buf, win)) => (Some(buf), win),
+        None => (None, None),
+    };
 
     // Create a scratch buffer if missing
     let mut buf: Buffer = match preview {
@@ -171,14 +176,9 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         api::set_option_value("modifiable", false, &bopts)?;
     }
 
-    // Is the preview buffer already shown?
-    let mut is_open = false;
-    for w in api::list_wins() {
-        if w.get_buf()? == buf {
-            is_open = true;
-            break;
-        }
-    }
+    // Is the preview buffer already shown? `find_preview` resolved that above;
+    // a scratch buffer created just now is by definition displayed nowhere.
+    let is_open = preview_win.is_some();
 
     // If not, create a vertical split and attach the preview buffer to it
     if !is_open {
@@ -254,50 +254,44 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
 /// Close the preview window if it exists
 pub fn close_preview() -> Result<()> {
-    let windows: Vec<Window> = api::list_wins().collect();
-    let window_count = windows.len();
+    let Some((_, Some(mut win))) = find_preview()? else {
+        set_cached_preview_buf(None);
+        return Ok(());
+    };
 
-    for mut win in windows {
-        let buf = win.get_buf()?;
-        let buf_name = buf.get_name()?;
-        if buf_name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            if window_count == 1 {
-                // nvim_win_close behaves like :close and refuses the last
-                // window (E444). Swap in a normal buffer instead, so the user
-                // lands somewhere usable rather than stuck in the unlisted,
-                // nomodifiable preview with no way back but :b#.
-                match api::create_buf(true, false) {
-                    Ok(replacement) => {
-                        if let Err(e) = win.set_buf(&replacement) {
-                            log_error!(
-                                "[time-tracking-nvim] could not replace the preview buffer: {}",
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        log_error!(
-                            "[time-tracking-nvim] could not create a replacement buffer: {}",
-                            e
-                        );
-                    }
+    let window_count = api::list_wins().count();
+
+    if window_count == 1 {
+        // nvim_win_close behaves like :close and refuses the last window
+        // (E444). Swap in a normal buffer instead, so the user lands somewhere
+        // usable rather than stuck in the unlisted, nomodifiable preview with
+        // no way back but :b#.
+        match api::create_buf(true, false) {
+            Ok(replacement) => {
+                if let Err(e) = win.set_buf(&replacement) {
+                    log_error!(
+                        "[time-tracking-nvim] could not replace the preview buffer: {}",
+                        e
+                    );
                 }
-            } else if let Err(e) = win.close(false) {
-                // Non-fatal: propagating here turns a single close failure into
-                // an error re-echoed on every subsequent BufEnter/WinClosed.
+            }
+            Err(e) => {
                 log_error!(
-                    "[time-tracking-nvim] could not close the preview window: {}",
+                    "[time-tracking-nvim] could not create a replacement buffer: {}",
                     e
                 );
             }
-            set_cached_preview_buf(None);
-            break;
         }
+    } else if let Err(e) = win.close(false) {
+        // Non-fatal: propagating here turns a single close failure into an
+        // error re-echoed on every subsequent BufEnter/WinClosed.
+        log_error!(
+            "[time-tracking-nvim] could not close the preview window: {}",
+            e
+        );
     }
 
+    set_cached_preview_buf(None);
     Ok(())
 }
 
@@ -325,20 +319,7 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     }
 
     // Check if preview window already exists
-    let windows = api::list_wins();
-    let mut has_preview = false;
-
-    for win in windows {
-        let buf = win.get_buf()?;
-        let buf_name = buf.get_name()?;
-        if buf_name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            has_preview = true;
-            break;
-        }
-    }
+    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
     // Only open if preview doesn't already exist
     if !has_preview {
@@ -368,22 +349,8 @@ pub fn auto_close_preview(config: &'static Config) -> Result<()> {
 }
 
 pub fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
-    // Always close the preview when BufLeave is triggered for a markdown file
-    // The autocommand pattern ensures we only get called for .md files
-    // Check if preview window exists and close it
-    let windows = api::list_wins();
-    for win in windows {
-        let buf = win.get_buf()?;
-        let buf_name = buf.get_name()?;
-        if buf_name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            log_info!("Auto-closing preview (leaving markdown file)\n");
-            win.close(false)?;
-            break;
-        }
-    }
-
-    Ok(())
+    // Always close the preview when BufLeave is triggered for a markdown file.
+    // The autocommand pattern ensures we only get called for .md files.
+    log_info!("Auto-closing preview (leaving markdown file)\n");
+    close_preview()
 }
