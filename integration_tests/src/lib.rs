@@ -185,7 +185,7 @@ fn test_any_tracking_visible_with_tracking_window() {
     win.set_buf(&buf).unwrap();
     
     // Test the function
-    let result = any_tracking_visible(&config).unwrap();
+    let result = any_tracking_visible(&config, None).unwrap();
     assert!(result, "Should detect time tracking file in visible window");
 }
 
@@ -201,7 +201,7 @@ fn test_any_tracking_visible_with_preview_window() {
     win.set_buf(&buf).unwrap();
     
     // Test the function - should return false because preview windows are ignored
-    let result = any_tracking_visible(&config).unwrap();
+    let result = any_tracking_visible(&config, None).unwrap();
     assert!(!result, "Should ignore preview windows when checking for visible tracking files");
 }
 
@@ -221,8 +221,33 @@ fn test_any_tracking_visible_no_tracking_files() {
     win.set_buf(&buf).unwrap();
     
     // Test the function
-    let result = any_tracking_visible(&config).unwrap();
+    let result = any_tracking_visible(&config, None).unwrap();
     assert!(!result, "Should return false when no time tracking files are visible");
+}
+
+#[nvim_oxi::test]
+fn test_any_tracking_visible_skips_the_excluded_window() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let win = api::get_current_win();
+    let handle = win.handle();
+
+    assert!(
+        any_tracking_visible(&config, None).unwrap(),
+        "the tracking window is visible when nothing is excluded"
+    );
+
+    // WinClosed fires "just before it is removed from the window layout", so
+    // the closing window is still in list_wins() when the handler runs.
+    assert!(
+        !any_tracking_visible(&config, Some(handle)).unwrap(),
+        "the window being closed must not count itself as still visible"
+    );
 }
 
 #[nvim_oxi::test]

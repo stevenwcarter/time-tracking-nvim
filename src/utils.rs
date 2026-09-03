@@ -169,8 +169,17 @@ pub fn get_buffer_content() -> Result<String> {
     Ok(content)
 }
 
-pub fn any_tracking_visible(config: &Config) -> Result<bool> {
+/// Is any window showing a time-tracking file?
+///
+/// `exclude_win` skips one window by handle. `WinClosed` fires *before* the
+/// window leaves the layout, so the handler must not let the window being
+/// closed vote for keeping the preview open.
+pub fn any_tracking_visible(config: &Config, exclude_win: Option<i32>) -> Result<bool> {
     for win in api::list_wins() {
+        if Some(win.handle()) == exclude_win {
+            continue;
+        }
+
         let buf = win.get_buf()?;
         let name = buf.get_name()?;
 
@@ -182,9 +191,6 @@ pub fn any_tracking_visible(config: &Config) -> Result<bool> {
             continue;
         }
 
-        // Decide if THIS buffer is a time-tracking one.
-        // If your existing utils::is_time_tracking_file(config) only checks
-        // the *current* buffer, add a sibling helper that inspects `name`.
         if is_win_time_tracking_file(win, config)? {
             return Ok(true);
         }

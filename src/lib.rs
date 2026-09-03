@@ -1,7 +1,7 @@
 use std::panic::{self, AssertUnwindSafe};
 
 use nvim_oxi::api::opts::OptionOptsBuilder;
-use nvim_oxi::api::types::CommandArgs;
+use nvim_oxi::api::types::{CommandArgs, CommandNArgs};
 use nvim_oxi::api::{Buffer, Window};
 use nvim_oxi::schedule;
 use nvim_oxi::{
@@ -149,9 +149,14 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     let close_preview_cmd =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(close_preview));
 
-    let maybe_close_if_invisible = Function::from_fn(move |_: CommandArgs| {
-        catch_nvim_panic(|| {
-            if !any_tracking_visible(config)? {
+    let maybe_close_if_invisible = Function::from_fn(move |args: CommandArgs| {
+        catch_nvim_panic(move || {
+            // WinClosed sets <amatch> to the window-ID of the window that is
+            // about to be removed. BufEnter/TabEnter set it to a buffer name,
+            // so those fire the command with no argument.
+            let exclude = args.args.as_deref().and_then(|s| s.trim().parse().ok());
+
+            if !any_tracking_visible(config, exclude)? {
                 close_preview()?;
             }
             Ok(())
@@ -161,7 +166,9 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::create_user_command(
         "TimeTrackingMaybeCloseIfInvisible",
         maybe_close_if_invisible,
-        &CreateCommandOpts::builder().build(),
+        &CreateCommandOpts::builder()
+            .nargs(CommandNArgs::ZeroOrOne)
+            .build(),
     )?;
 
     // Register commands
@@ -198,7 +205,8 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     // Register autocommands via Vimscript to avoid nvim-oxi keyset mask mismatch on 0.12.2+
     api::command("augroup TimeTrackingNvim")?;
     api::command("autocmd!")?;
-    api::command("autocmd BufEnter,WinClosed,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
+    api::command("autocmd BufEnter,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
+    api::command("autocmd WinClosed * TimeTrackingMaybeCloseIfInvisible <amatch>")?;
     api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdate")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
     api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
