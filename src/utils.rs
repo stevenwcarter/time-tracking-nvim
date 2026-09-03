@@ -123,11 +123,18 @@ pub fn get_buffer_content() -> Result<String> {
     let current_buffer = api::get_current_buf();
     let line_count = current_buffer.line_count()?;
     let lines = current_buffer.get_lines(0..line_count, false)?;
-    Ok(lines
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>()
-        .join("\n"))
+
+    // Build the joined string directly: the previous
+    // `.map(to_string).collect::<Vec<_>>().join()` allocated one String per
+    // line plus a Vec, then threw them all away.
+    let mut content = String::new();
+    for (i, line) in lines.enumerate() {
+        if i > 0 {
+            content.push('\n');
+        }
+        content.push_str(&line.to_string());
+    }
+    Ok(content)
 }
 
 pub fn any_tracking_visible(config: &Config) -> Result<bool> {
