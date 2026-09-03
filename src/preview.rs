@@ -131,14 +131,15 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
     // If not, create a vertical split and attach the preview buffer to it
     if !is_open {
-        // Use a plain command for portability; it’s fine here.
+        // Use a plain command for portability; it's fine here.
         if let Err(e) = api::command("rightbelow vsplit") {
             let msg = e.to_string();
             if msg.contains("E242") || msg.contains("Can't split a window while closing another") {
-                // Window operation in progress; skip silently
+                // Window operation in progress; skip this update.
+                debug_log!("[ttnvim] skipping split during window close: {}\n", msg);
                 return Ok(());
             }
-            eprintln!("[time-tracking] failed to split: {}", msg);
+            log_error!("[time-tracking-nvim] failed to split: {}", msg);
             return Ok(());
         }
 
@@ -147,7 +148,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
         // Attach our preview buffer
         if let Err(e) = win.set_buf(&buf) {
-            eprintln!("[time-tracking] failed to set preview buffer: {}", e);
+            log_error!("[time-tracking-nvim] failed to set preview buffer: {}", e);
             let _ = win.close(false);
             return Ok(());
         }
