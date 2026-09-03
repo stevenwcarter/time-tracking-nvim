@@ -26,8 +26,10 @@ static DATA_DIR_MEMO: Mutex<Option<(String, Option<PathBuf>)>> = Mutex::new(None
 
 /// Resolves and caches the canonicalized data directory for `config`.
 ///
-/// Returns `None` (and warns once via [`DATA_DIR_WARNED`]) when the configured
-/// directory does not exist or cannot be canonicalized.
+/// Returns `None` when the configured directory does not exist or cannot be
+/// canonicalized, warning once via [`DATA_DIR_WARNED`] — unless Neovim is
+/// already quitting, in which case the warning is skipped rather than risking
+/// a crash (see the comment on the `Err` arm below).
 fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
     let configured = config.get_data_directory().unwrap_or("").to_owned();
 
@@ -47,21 +49,38 @@ fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
     let resolved = match fs::canonicalize(&configured) {
         Ok(dir) => Some(dir),
         Err(e) => {
-            DATA_DIR_WARNED.call_once(|| {
-                let configured = configured.clone();
-                let error = e.to_string();
-                // Deferred via `schedule`: this branch can run from the
-                // startup auto-open callback, which fires on a nvim main-loop
-                // tick where calling the API synchronously is unsafe.
-                nvim_oxi::schedule(move |_| {
+            // `v:exiting` is non-nil once Neovim has begun quitting. Two
+            // pre-existing integration tests (test_time_tracking_with_config_
+            // creates_{commands,autocommands}) drop their Config's backing
+            // TempDir when the Rust test function returns, and separately
+            // register a `schedule()`-deferred TimeTrackingAutoOpen callback
+            // (see lib.rs) at startup that is still pending at that point.
+            // That callback then runs during the harness's `:qall!`-driven
+            // shutdown — confirmed empirically via `v:exiting` — observing a
+            // directory the *test itself* just deleted, not a real
+            // misconfiguration. Calling the nvim API at that point crashes
+            // the process, so skip the warning outright: nvim is about to
+            // exit anyway, so nothing would show it to a user.
+            //
+            // `DATA_DIR_WARNED.call_once` is called from right here, at the
+            // point the message is actually written, not from an outer gate
+            // that decides whether to attempt it — so a call suppressed by
+            // `is_exiting` above never marks the warning "done", and a later
+            // call (this process is not, in fact, exiting) still gets to try.
+            let is_exiting = api::get_vvar::<Option<i64>>("exiting")
+                .ok()
+                .flatten()
+                .is_some();
+            if !is_exiting {
+                DATA_DIR_WARNED.call_once(|| {
                     log_error!(
                         "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
                          The preview will not open for any file until this is fixed.",
                         configured,
-                        error
+                        e
                     );
                 });
-            });
+            }
             None
         }
     };

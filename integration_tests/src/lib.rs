@@ -590,3 +590,4 @@ fn test_data_dir_memo_does_not_leak_between_configs() {
         buf_b.delete(&delete_opts).unwrap();
     }
 }
+
