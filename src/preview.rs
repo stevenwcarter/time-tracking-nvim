@@ -190,16 +190,45 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
 /// Close the preview window if it exists
 pub fn close_preview() -> Result<()> {
-    let windows = api::list_wins();
+    let windows: Vec<Window> = api::list_wins().collect();
+    let window_count = windows.len();
 
-    for win in windows {
+    for mut win in windows {
         let buf = win.get_buf()?;
         let buf_name = buf.get_name()?;
         if buf_name
             .to_str()
             .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
         {
-            win.close(false)?;
+            if window_count == 1 {
+                // nvim_win_close behaves like :close and refuses the last
+                // window (E444). Swap in a normal buffer instead, so the user
+                // lands somewhere usable rather than stuck in the unlisted,
+                // nomodifiable preview with no way back but :b#.
+                match api::create_buf(true, false) {
+                    Ok(replacement) => {
+                        if let Err(e) = win.set_buf(&replacement) {
+                            log_error!(
+                                "[time-tracking-nvim] could not replace the preview buffer: {}",
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log_error!(
+                            "[time-tracking-nvim] could not create a replacement buffer: {}",
+                            e
+                        );
+                    }
+                }
+            } else if let Err(e) = win.close(false) {
+                // Non-fatal: propagating here turns a single close failure into
+                // an error re-echoed on every subsequent BufEnter/WinClosed.
+                log_error!(
+                    "[time-tracking-nvim] could not close the preview window: {}",
+                    e
+                );
+            }
             break;
         }
     }

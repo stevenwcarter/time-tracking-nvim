@@ -226,7 +226,7 @@ fn test_any_tracking_visible_no_tracking_files() {
 }
 
 // Tests for lib.rs functions
-use time_tracking_nvim::{create_or_update_preview, time_tracking_with_config};
+use time_tracking_nvim::{close_preview, create_or_update_preview, time_tracking_with_config};
 
 #[nvim_oxi::test]
 fn test_create_or_update_preview_creates_new_buffer() {
@@ -679,6 +679,41 @@ fn test_toggle_outside_data_dir_creates_no_preview_and_returns_ok() {
     assert!(
         !has_preview,
         "toggling outside the data directory must not create a preview"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_close_preview_when_it_is_the_last_window() {
+    cleanup_preview_buffers();
+
+    // Put the preview in the only window, the state reached by pressing
+    // <C-w>c in the file window (QuitPre does not fire for :close).
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    // create_or_update_preview leaves the cursor back in the source window,
+    // with the preview as a sibling split. Close the source window (the
+    // <C-w>c) rather than `:only` from it: the preview buffer is
+    // `bufhidden=wipe`, so `:only` from the source window would close the
+    // preview window instead and wipe the buffer out from under us.
+    api::command("close").unwrap();
+    assert_eq!(api::list_wins().count(), 1, "precondition: one window");
+
+    let result = close_preview();
+    assert!(
+        result.is_ok(),
+        "closing the preview as the last window must not propagate E444: {:?}",
+        result
+    );
+
+    let still_showing_preview = api::get_current_win()
+        .get_buf()
+        .unwrap()
+        .get_name()
+        .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+        .unwrap_or(false);
+    assert!(
+        !still_showing_preview,
+        "the user must not be left sitting in the nomodifiable preview buffer"
     );
 }
 
