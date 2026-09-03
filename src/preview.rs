@@ -147,6 +147,19 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 
     // If not, create a vertical split and attach the preview buffer to it
     if !is_open {
+        // Capture the window we are about to split, before the split halves it.
+        let source_width = api::get_current_win().get_width().unwrap_or(u32::MAX);
+
+        // Below ~40 columns the vsplit fails outright with E36 and wrecks the
+        // layout on the way. No preview is a better outcome than a broken one.
+        if source_width < 40 {
+            debug_log!(
+                "[ttnvim] skipping preview split: source window is {} columns\n",
+                source_width
+            );
+            return Ok(());
+        }
+
         // Use a plain command for portability; it's fine here.
         if let Err(e) = api::command("rightbelow vsplit") {
             let msg = e.to_string();
@@ -185,11 +198,15 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         let _ = api::set_option_value("spell", false, &wopts);
         let _ = api::set_option_value("list", false, &wopts);
 
-        // Make it ~1/3 of the screen (columns is global; default opts OK)
+        // ~1/3 of the screen, but never more than the window we split from can
+        // spare: `columns` is global, and applying it to a window that is
+        // itself only a third of the screen squeezes the user's edit window to
+        // a couple of columns.
         if let Ok(total_cols) =
             api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())
         {
-            let width = (total_cols / 3).max(20) as u32;
+            let one_third = (total_cols / 3).max(0) as u32;
+            let width = one_third.min(source_width.saturating_sub(20)).max(20);
             let _ = win.set_width(width);
         }
 

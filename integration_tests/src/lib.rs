@@ -768,3 +768,51 @@ fn test_preview_window_is_styled_as_a_scratch_preview() {
     api::command("only").unwrap();
 }
 
+#[nvim_oxi::test]
+fn test_preview_does_not_crush_a_narrow_source_window() {
+    use nvim_oxi::api::opts::OptionOptsBuilder;
+
+    cleanup_preview_buffers();
+    api::command("only").unwrap();
+
+    // Pin the screen width so the assertion does not depend on the harness's
+    // terminal size.
+    let gopts = OptionOptsBuilder::default().build();
+    let orig_columns: i64 = api::get_option_value("columns", &gopts).unwrap();
+    api::set_option_value("columns", 80i64, &gopts).unwrap();
+    let total_cols: i64 = api::get_option_value("columns", &gopts).unwrap();
+
+    // Three vertical splits, so the source window is narrower than
+    // total_cols/3 — the layout the finding describes.
+    api::command("vsplit").unwrap();
+    api::command("vsplit").unwrap();
+    api::command("vsplit").unwrap();
+
+    let source_width_before = api::get_current_win().get_width().unwrap();
+
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    let preview_win = api::list_wins().find(|w| {
+        w.get_buf()
+            .and_then(|b| b.get_name())
+            .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+            .unwrap_or(false)
+    });
+
+    if let Some(preview_win) = preview_win {
+        let preview_width = preview_win.get_width().unwrap();
+        assert!(
+            i64::from(preview_width) <= i64::from(source_width_before),
+            "the preview ({preview_width} cols) took more than the window it \
+             split from ({source_width_before} cols); width was computed from \
+             the global &columns ({total_cols}) instead of available space"
+        );
+    }
+    // No preview at all is the correct outcome for a very narrow source window.
+
+    // Restore global state so later tests do not inherit this test's pinned
+    // screen width or window layout.
+    api::set_option_value("columns", orig_columns, &gopts).unwrap();
+    api::command("only").unwrap();
+}
+
