@@ -881,3 +881,42 @@ fn test_preview_width_clamps_to_source_window_not_global_columns() {
     api::command("only").unwrap();
 }
 
+
+#[nvim_oxi::test]
+fn test_preview_cache_survives_a_wiped_buffer() {
+    cleanup_preview_buffers();
+
+    // First creation populates whatever cache exists.
+    create_or_update_preview("first").unwrap();
+    let first = api::list_bufs()
+        .find(|b| {
+            b.get_name()
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("preview buffer should exist");
+
+    // bufhidden=wipe means the handle really can go away underneath us.
+    api::command(&format!("bwipeout! {}", first.handle())).unwrap();
+    assert!(!first.is_valid(), "precondition: the handle is now invalid");
+
+    // Must not reuse the dead handle.
+    let result = create_or_update_preview("second");
+    assert!(result.is_ok(), "recreating after a wipe must succeed: {:?}", result);
+
+    let second = api::list_bufs()
+        .find(|b| {
+            b.get_name()
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("a fresh preview buffer should have been created");
+    assert!(second.is_valid());
+
+    let lines: Vec<String> = second
+        .get_lines(.., false)
+        .unwrap()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(lines, vec!["second".to_string()]);
+}

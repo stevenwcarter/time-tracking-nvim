@@ -1,5 +1,35 @@
 use super::*;
 
+use std::cell::RefCell;
+
+thread_local! {
+    /// Cached handle to the preview buffer.
+    ///
+    /// The preview is created with `bufhidden=wipe`, so this handle can become
+    /// invalid at any time — every read revalidates with `is_valid()` and falls
+    /// back to a full scan. Without it, refreshing the preview cost one FFI
+    /// round-trip per open buffer, on every keystroke.
+    static PREVIEW_BUF: RefCell<Option<Buffer>> = const { RefCell::new(None) };
+}
+
+fn cached_preview_buf() -> Option<Buffer> {
+    PREVIEW_BUF.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match slot.as_ref() {
+            Some(buf) if buf.is_valid() => Some(buf.clone()),
+            Some(_) => {
+                *slot = None;
+                None
+            }
+            None => None,
+        }
+    })
+}
+
+fn set_cached_preview_buf(buf: Option<Buffer>) {
+    PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
+}
+
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     // Check if this is a time tracking file
     if !is_time_tracking_file(config)? {
@@ -98,17 +128,21 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Find an existing preview buffer
-    let mut preview: Option<Buffer> = None;
-    for b in api::list_bufs() {
-        if b.get_name()?
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
-            preview = Some(b);
-            break;
+    // Find an existing preview buffer, preferring the cached handle.
+    let preview: Option<Buffer> = cached_preview_buf().or_else(|| {
+        let found = api::list_bufs().find(|b| {
+            b.get_name()
+                .map(|n| {
+                    n.to_str()
+                        .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
+                })
+                .unwrap_or(false)
+        });
+        if let Some(ref b) = found {
+            set_cached_preview_buf(Some(b.clone()));
         }
-    }
+        found
+    });
 
     // Create a scratch buffer if missing
     let mut buf: Buffer = match preview {
@@ -123,6 +157,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
             api::set_option_value("modifiable", false, &bopts)?;
             api::set_option_value("bufhidden", "wipe", &bopts)?;
             api::set_option_value("swapfile", false, &bopts)?;
+            set_cached_preview_buf(Some(b.clone()));
             b
         }
     };
@@ -258,6 +293,7 @@ pub fn close_preview() -> Result<()> {
                     e
                 );
             }
+            set_cached_preview_buf(None);
             break;
         }
     }
