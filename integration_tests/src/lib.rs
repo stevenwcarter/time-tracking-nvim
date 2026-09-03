@@ -816,3 +816,68 @@ fn test_preview_does_not_crush_a_narrow_source_window() {
     api::command("only").unwrap();
 }
 
+#[nvim_oxi::test]
+fn test_preview_width_clamps_to_source_window_not_global_columns() {
+    use nvim_oxi::api::opts::OptionOptsBuilder;
+
+    cleanup_preview_buffers();
+    api::command("only").unwrap();
+
+    let gopts = OptionOptsBuilder::default().build();
+    let orig_columns: i64 = api::get_option_value("columns", &gopts).unwrap();
+    let orig_equalalways: bool = api::get_option_value("equalalways", &gopts).unwrap();
+
+    // Disable rebalancing so the source window's width is exactly what we
+    // set it to below, not whatever `equalalways` happens to land on —
+    // relying on rebalancing arithmetic to produce a convenient number is
+    // what made the original 2-vsplit narrow-window test a false guard.
+    api::set_option_value("equalalways", false, &gopts).unwrap();
+    api::set_option_value("columns", 200i64, &gopts).unwrap();
+    let total_cols: i64 = api::get_option_value("columns", &gopts).unwrap();
+    let one_third = total_cols / 3;
+
+    api::command("vsplit").unwrap();
+    let mut source_win = api::get_current_win();
+    source_win.set_width(50).unwrap();
+
+    let source_width_before = source_win.get_width().unwrap();
+    assert!(
+        source_width_before >= 40,
+        "precondition: source window must be at least 40 columns so the \
+         <40 bail does not fire (got {source_width_before})"
+    );
+
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    let preview_win = api::list_wins()
+        .find(|w| {
+            w.get_buf()
+                .and_then(|b| b.get_name())
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect(
+            "preview window must be created: the source window is wide \
+             enough that the <40 bail must not fire",
+        );
+
+    let preview_width = preview_win.get_width().unwrap();
+    assert!(
+        i64::from(preview_width) <= i64::from(source_width_before) - 20,
+        "the preview ({preview_width} cols) left the {source_width_before}-column \
+         source window less than 20 columns to work with"
+    );
+    assert!(
+        i64::from(preview_width) < one_third,
+        "the preview ({preview_width} cols) was sized from the global \
+         &columns ({total_cols}, one third = {one_third}) instead of the \
+         {source_width_before}-column window it split from"
+    );
+
+    // Restore global state so later tests do not inherit this test's pinned
+    // screen width, disabled rebalancing, or window layout.
+    api::set_option_value("columns", orig_columns, &gopts).unwrap();
+    api::set_option_value("equalalways", orig_equalalways, &gopts).unwrap();
+    api::command("only").unwrap();
+}
+
