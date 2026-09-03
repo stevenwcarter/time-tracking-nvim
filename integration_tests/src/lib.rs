@@ -517,3 +517,32 @@ fn test_is_buf_time_tracking_file_unwritten_file_outside_data_dir() {
          data-directory boundary"
     );
 }
+
+#[nvim_oxi::test]
+fn test_missing_data_directory_returns_false_and_does_not_panic() {
+    // A data_directory that does not exist — the "misconfigured time-tracking-cli"
+    // case that currently turns the whole plugin into a silent no-op.
+    let config = Config {
+        data_directory: Some("/nonexistent/time/tracking/dir".to_string()),
+        date: time::Date::from_calendar_date(2024, time::Month::January, 1).unwrap(),
+        ..Default::default()
+    };
+
+    let scratch = TempDir::new().unwrap();
+    let md_file = create_test_file(scratch.path(), "test.md", "# Test");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md_file).unwrap();
+
+    // Repeated calls model the per-keystroke TextChanged path: the warning
+    // must be emitted at most once, and no call may panic or error.
+    for _ in 0..5 {
+        let buf = buf.clone();
+        let result = is_buf_time_tracking_file(buf, &config);
+        assert!(
+            result.is_ok(),
+            "a missing data directory must not produce an Err: {:?}",
+            result
+        );
+        assert!(!result.unwrap(), "nothing is a tracking file without a data dir");
+    }
+}

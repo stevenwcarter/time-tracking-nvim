@@ -1,10 +1,16 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Once};
 
 use nvim_oxi::{
     Result,
-    api::{self, Buffer, Error, Window},
+    api::{self, Buffer, Window},
 };
 use time_tracking_cli::Config;
+
+use crate::log_error;
+
+/// Guards the data-directory warning so the per-keystroke `TextChanged` path
+/// cannot spam `:messages` with the same line on every keypress.
+static DATA_DIR_WARNED: Once = Once::new();
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)
 pub fn is_time_tracking_file(config: &Config) -> Result<bool> {
@@ -45,12 +51,26 @@ pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Res
 
     // TODO: Need to canonicalize in case the data directory is a symlink, should be done upstream
     // probably
-    let data_dir = fs::canonicalize(config.get_data_directory().unwrap_or(""))
-        .map_err(|_| Error::Other("could not find path for data directory".to_owned()))
-        .ok();
-
-    let Some(data_dir) = data_dir else {
-        return Ok(false);
+    let data_dir = match fs::canonicalize(config.get_data_directory().unwrap_or("")) {
+        Ok(dir) => dir,
+        Err(e) => {
+            DATA_DIR_WARNED.call_once(|| {
+                let configured = config.get_data_directory().unwrap_or("<unset>").to_owned();
+                let error = e.to_string();
+                // Deferred via `schedule`: this branch can run from the
+                // startup auto-open callback, which fires on a nvim main-loop
+                // tick where calling the API synchronously is unsafe.
+                nvim_oxi::schedule(move |_| {
+                    log_error!(
+                        "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
+                         The preview will not open for any file until this is fixed.",
+                        configured,
+                        error
+                    );
+                });
+            });
+            return Ok(false);
+        }
     };
 
     // Check if file is in data directory and has .md extension
