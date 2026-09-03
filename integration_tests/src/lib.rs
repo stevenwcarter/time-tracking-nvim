@@ -225,6 +225,32 @@ fn test_any_tracking_visible_no_tracking_files() {
     assert!(!result, "Should return false when no time tracking files are visible");
 }
 
+#[nvim_oxi::test]
+fn test_only_md_files_can_be_tracking_files() {
+    // Invariant 2 (see the code-health spec): narrowing the TextChanged
+    // autocmd pattern from `*` to `*.md` is behavior-preserving ONLY because
+    // is_buf_time_tracking_file already requires a .md extension. Pin it here
+    // so a later change that relaxes the extension check fails loudly instead
+    // of silently disabling live updates for the newly-allowed extensions.
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+
+    for name in ["notes.txt", "notes.markdown", "notes", "notes.md.bak"] {
+        let file = create_test_file(temp_dir.path(), name, "content");
+        let mut buf = api::create_buf(false, false).unwrap();
+        buf.set_name(&file).unwrap();
+        assert!(
+            !is_buf_time_tracking_file(buf, &config).unwrap(),
+            "{name} must not be a tracking file — the TextChanged autocmd only \
+             fires for *.md"
+        );
+    }
+
+    let md = create_test_file(temp_dir.path(), "notes.md", "content");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    assert!(is_buf_time_tracking_file(buf, &config).unwrap());
+}
+
 // Tests for lib.rs functions
 use time_tracking_nvim::{close_preview, create_or_update_preview, time_tracking_with_config};
 

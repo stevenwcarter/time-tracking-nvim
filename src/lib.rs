@@ -199,7 +199,7 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::command("augroup TimeTrackingNvim")?;
     api::command("autocmd!")?;
     api::command("autocmd BufEnter,WinClosed,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
-    api::command("autocmd TextChanged,TextChangedI * TimeTrackingUpdate")?;
+    api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdate")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
     api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
     api::command("autocmd QuitPre * TimeTrackingClose")?;
