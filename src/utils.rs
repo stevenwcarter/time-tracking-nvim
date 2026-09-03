@@ -31,18 +31,17 @@ pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Res
     }
 
     let buffer_path = Path::new(buffer_name_str);
-    let buffer_path = fs::canonicalize(buffer_path)
-        .map_err(|e| {
-            Error::Other(format!(
-                "Could not convert {} to a path: {}",
-                buffer_name_str, e
-            ))
-        })
-        .ok();
 
-    if buffer_path.is_none() {
-        return Ok(false);
-    }
+    // The file may not exist yet — opening today's not-yet-written daily note
+    // is the primary workflow — so resolve the parent directory instead and
+    // rejoin the file name. Falls back to the raw path when the parent does
+    // not resolve either.
+    let buffer_path = match (buffer_path.parent(), buffer_path.file_name()) {
+        (Some(parent), Some(file_name)) => fs::canonicalize(parent)
+            .map(|dir| dir.join(file_name))
+            .unwrap_or_else(|_| buffer_path.to_path_buf()),
+        _ => buffer_path.to_path_buf(),
+    };
 
     // TODO: Need to canonicalize in case the data directory is a symlink, should be done upstream
     // probably
@@ -50,12 +49,9 @@ pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Res
         .map_err(|_| Error::Other("could not find path for data directory".to_owned()))
         .ok();
 
-    if buffer_path.is_none() || data_dir.is_none() {
+    let Some(data_dir) = data_dir else {
         return Ok(false);
-    }
-
-    let buffer_path = buffer_path.unwrap();
-    let data_dir = data_dir.unwrap();
+    };
 
     // Check if file is in data directory and has .md extension
     let is_time_tracking_file = buffer_path.starts_with(data_dir)

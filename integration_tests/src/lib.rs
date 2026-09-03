@@ -480,3 +480,40 @@ fn test_multiple_preview_creation_updates_same_buffer() {
     let content = lines.join("\n");
     assert_eq!(content, content3, "Should have the latest content");
 }
+
+#[nvim_oxi::test]
+fn test_is_buf_time_tracking_file_for_file_not_yet_written() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+
+    // The primary workflow: `nvim ~/timetracking/2026-09-03.md` for today's
+    // date, where the file does not exist on disk yet.
+    let unwritten = temp_dir.path().join("2026-09-03.md");
+    assert!(!unwritten.exists(), "precondition: file must not exist");
+
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&unwritten).unwrap();
+
+    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    assert!(
+        result,
+        "a .md file in the data directory that has not been written yet \
+         should still be recognised as a time tracking file"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_is_buf_time_tracking_file_unwritten_file_outside_data_dir() {
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let other_dir = TempDir::new().unwrap();
+
+    let unwritten = other_dir.path().join("2026-09-03.md");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&unwritten).unwrap();
+
+    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    assert!(
+        !result,
+        "tolerating an unwritten file must not also stop enforcing the \
+         data-directory boundary"
+    );
+}
