@@ -30,6 +30,15 @@ static DATA_DIR_MEMO: Mutex<Option<(String, Option<PathBuf>)>> = Mutex::new(None
 /// canonicalized, warning once via [`DATA_DIR_WARNED`] — unless Neovim is
 /// already quitting, in which case the warning is skipped rather than risking
 /// a crash (see the comment on the `Err` arm below).
+///
+/// A miss is deliberately **not** cached. Before memoization the plugin
+/// re-resolved on every call, so a directory that started missing and later
+/// appeared (mounted, created, typo fixed) started working on the very next
+/// keystroke — and the warning this function prints says "until this is
+/// fixed", promising exactly that recovery. Caching a miss would answer
+/// `None` forever once cached, contradicting the message and requiring a
+/// restart to recover; only a successful resolution is stable enough to
+/// memoize; a failure is retried every call, same as before B15.
 fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
     let configured = config.get_data_directory().unwrap_or("").to_owned();
 
@@ -46,9 +55,16 @@ fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
         return value.clone();
     }
 
-    let resolved = match fs::canonicalize(&configured) {
-        Ok(dir) => Some(dir),
+    match fs::canonicalize(&configured) {
+        Ok(dir) => {
+            *memo = Some((configured, Some(dir.clone())));
+            Some(dir)
+        }
         Err(e) => {
+            // Leave `memo` untouched: a miss is not cached (see doc comment
+            // above), and must not evict a previously cached successful
+            // resolution for a different key either.
+            //
             // `v:exiting` is non-nil once Neovim has begun quitting. Two
             // pre-existing integration tests (test_time_tracking_with_config_
             // creates_{commands,autocommands}) drop their Config's backing
@@ -83,10 +99,7 @@ fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
             }
             None
         }
-    };
-
-    *memo = Some((configured, resolved.clone()));
-    resolved
+    }
 }
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)

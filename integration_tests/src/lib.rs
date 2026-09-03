@@ -591,3 +591,37 @@ fn test_data_dir_memo_does_not_leak_between_configs() {
     }
 }
 
+#[nvim_oxi::test]
+fn test_data_dir_miss_is_not_cached() {
+    // Fix-round regression guard (Finding 2): B15's memo must cache only
+    // successful resolutions. A directory that is missing on the first call
+    // and created before the second call must resolve on that very next
+    // call — the warning text promises "until this is fixed", so caching the
+    // miss (recovering only on restart) would contradict it.
+    let temp_dir = TempDir::new().unwrap();
+    let data_dir = temp_dir.path().join("not-yet-created");
+    assert!(!data_dir.exists(), "precondition: directory must not exist yet");
+
+    let config = Config {
+        data_directory: Some(data_dir.to_str().unwrap().to_string()),
+        date: time::Date::from_calendar_date(2024, time::Month::January, 1).unwrap(),
+        ..Default::default()
+    };
+
+    let md_file_path = data_dir.join("test.md");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md_file_path).unwrap();
+
+    let miss = is_buf_time_tracking_file(buf.clone(), &config).unwrap();
+    assert!(!miss, "a missing data directory must not resolve as a tracking file");
+
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let hit = is_buf_time_tracking_file(buf, &config).unwrap();
+    assert!(
+        hit,
+        "a data directory that now exists must resolve on the very next call, \
+         proving the earlier miss was not cached"
+    );
+}
+
