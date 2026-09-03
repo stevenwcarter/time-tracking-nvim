@@ -1,4 +1,8 @@
-use std::{fs, path::Path, sync::Once};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, Once},
+};
 
 use nvim_oxi::{
     Result,
@@ -11,6 +15,60 @@ use crate::log_error;
 /// Guards the data-directory warning so the per-keystroke `TextChanged` path
 /// cannot spam `:messages` with the same line on every keypress.
 static DATA_DIR_WARNED: Once = Once::new();
+
+/// Memoized resolution of the configured data directory.
+///
+/// `Config` is loaded once at plugin init and never mutated (see `lib.rs`), so
+/// in production this resolves exactly once instead of paying a `realpath(2)`
+/// on every keystroke. Keyed on the raw configured string so that tests — which
+/// build several `Config`s in one process — still get the right answer.
+static DATA_DIR_MEMO: Mutex<Option<(String, Option<PathBuf>)>> = Mutex::new(None);
+
+/// Resolves and caches the canonicalized data directory for `config`.
+///
+/// Returns `None` (and warns once via [`DATA_DIR_WARNED`]) when the configured
+/// directory does not exist or cannot be canonicalized.
+fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
+    let configured = config.get_data_directory().unwrap_or("").to_owned();
+
+    let mut memo = match DATA_DIR_MEMO.lock() {
+        Ok(memo) => memo,
+        // A poisoned lock must not disable file detection; fall back to an
+        // uncached resolve.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if let Some((key, value)) = memo.as_ref()
+        && key == &configured
+    {
+        return value.clone();
+    }
+
+    let resolved = match fs::canonicalize(&configured) {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            DATA_DIR_WARNED.call_once(|| {
+                let configured = configured.clone();
+                let error = e.to_string();
+                // Deferred via `schedule`: this branch can run from the
+                // startup auto-open callback, which fires on a nvim main-loop
+                // tick where calling the API synchronously is unsafe.
+                nvim_oxi::schedule(move |_| {
+                    log_error!(
+                        "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
+                         The preview will not open for any file until this is fixed.",
+                        configured,
+                        error
+                    );
+                });
+            });
+            None
+        }
+    };
+
+    *memo = Some((configured, resolved.clone()));
+    resolved
+}
 
 /// Check if the current buffer is a time tracking file (markdown file in data directory)
 pub fn is_time_tracking_file(config: &Config) -> Result<bool> {
@@ -49,28 +107,8 @@ pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Res
         _ => buffer_path.to_path_buf(),
     };
 
-    // TODO: Need to canonicalize in case the data directory is a symlink, should be done upstream
-    // probably
-    let data_dir = match fs::canonicalize(config.get_data_directory().unwrap_or("")) {
-        Ok(dir) => dir,
-        Err(e) => {
-            DATA_DIR_WARNED.call_once(|| {
-                let configured = config.get_data_directory().unwrap_or("<unset>").to_owned();
-                let error = e.to_string();
-                // Deferred via `schedule`: this branch can run from the
-                // startup auto-open callback, which fires on a nvim main-loop
-                // tick where calling the API synchronously is unsafe.
-                nvim_oxi::schedule(move |_| {
-                    log_error!(
-                        "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
-                         The preview will not open for any file until this is fixed.",
-                        configured,
-                        error
-                    );
-                });
-            });
-            return Ok(false);
-        }
+    let Some(data_dir) = resolved_data_dir(config) else {
+        return Ok(false);
     };
 
     // Check if file is in data directory and has .md extension

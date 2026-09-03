@@ -546,3 +546,47 @@ fn test_missing_data_directory_returns_false_and_does_not_panic() {
         assert!(!result.unwrap(), "nothing is a tracking file without a data dir");
     }
 }
+
+#[nvim_oxi::test]
+fn test_data_dir_memo_does_not_leak_between_configs() {
+    // Two configs with different data directories, used alternately. A
+    // process-global memo keyed only on "have I run yet" would answer with the
+    // first config's directory for the second config's buffer.
+    let (config_a, dir_a) = create_test_config_with_temp_dir();
+    let (config_b, dir_b) = create_test_config_with_temp_dir();
+
+    let file_a = create_test_file(dir_a.path(), "a.md", "# A");
+    let file_b = create_test_file(dir_b.path(), "b.md", "# B");
+
+    for _ in 0..3 {
+        let mut buf_a = api::create_buf(false, false).unwrap();
+        buf_a.set_name(&file_a).unwrap();
+        assert!(
+            is_buf_time_tracking_file(buf_a.clone(), &config_a).unwrap(),
+            "file A must resolve against config A"
+        );
+
+        let mut buf_b = api::create_buf(false, false).unwrap();
+        buf_b.set_name(&file_b).unwrap();
+        assert!(
+            is_buf_time_tracking_file(buf_b.clone(), &config_b).unwrap(),
+            "file B must resolve against config B"
+        );
+
+        // Cross pairs must stay false. Reuses buf_a (rather than a second
+        // buffer also named file_a) because Neovim does not allow two
+        // buffers to share a name at once.
+        assert!(
+            !is_buf_time_tracking_file(buf_a.clone(), &config_b).unwrap(),
+            "file A must not resolve against config B"
+        );
+
+        // Free both names so the next iteration's create_buf + set_name
+        // does not collide with this iteration's buffers.
+        let delete_opts = nvim_oxi::api::opts::BufDeleteOpts::builder()
+            .force(true)
+            .build();
+        buf_a.delete(&delete_opts).unwrap();
+        buf_b.delete(&delete_opts).unwrap();
+    }
+}
