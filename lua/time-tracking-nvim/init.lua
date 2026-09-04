@@ -176,12 +176,19 @@ end
 
 -- Download and extract binary from GitHub releases
 local function download_binary(target, binary_path, callback, expected_version)
-	-- Get the latest release info
+	-- Ask for the release we actually want. Falling back to /latest only when
+	-- no version was requested: previously this always fetched /latest and then
+	-- recorded expected_version, so the .version file was an assertion about
+	-- what we wanted rather than an observation of what we got.
+	local api_base = "https://api.github.com/repos/stevenwcarter/time-tracking-nvim/releases"
+	local release_url = expected_version and (api_base .. "/tags/v" .. expected_version)
+		or (api_base .. "/latest")
+
 	local cmd = {
 		"curl",
 		"-L",
 		"-s",
-		"https://api.github.com/repos/stevenwcarter/time-tracking-nvim/releases/latest",
+		release_url,
 	}
 
 	vim.system(cmd, {}, function(result)
@@ -278,8 +285,27 @@ local function download_binary(target, binary_path, callback, expected_version)
 										return
 									end
 
-									-- Store the version information
-									local version_to_store = expected_version or release_info.tag_name or "unknown"
+									-- Record the tag we actually downloaded, not the one we asked
+									-- for: with a pinned plugin tag these can differ, and recording
+									-- the request made every later version comparison a no-op.
+									local resolved_tag = release_info.tag_name
+									local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
+
+									if expected_version and version_to_store ~= expected_version then
+										vim.api.nvim_echo({
+											{ "time-tracking-nvim: ", "WarningMsg" },
+											{
+												string.format(
+													"requested v%s but the release resolved to %s; recording %s",
+													expected_version,
+													tostring(resolved_tag),
+													version_to_store
+												),
+												"Normal",
+											},
+										}, false, {})
+									end
+
 									if not write_binary_version(version_to_store) then
 										-- Not a fatal error, just warn
 										vim.api.nvim_echo({
