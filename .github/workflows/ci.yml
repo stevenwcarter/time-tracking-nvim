@@ -86,3 +86,21 @@ jobs:
         
       - name: Run security audit
         run: cargo audit
+
+  version-sync:
+    name: Version sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Cargo.toml and init.lua agree
+        run: |
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          lua_version=$(grep -m1 'PLUGIN_VERSION = ' lua/time-tracking-nvim/init.lua | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Cargo.toml: ${cargo_version}"
+          echo "init.lua:   ${lua_version}"
+          if [ "${cargo_version}" != "${lua_version}" ]; then
+            echo "::error::PLUGIN_VERSION (${lua_version}) does not match Cargo.toml version (${cargo_version})"
+            exit 1
+          fi

@@ -5,7 +5,7 @@ local M = {}
 local uv = vim.uv or vim.loop
 
 -- Plugin version (should match Cargo.toml)
-local PLUGIN_VERSION = "0.1.4"
+local PLUGIN_VERSION = "0.1.7"
 
 -- Default configuration
 local default_config = {

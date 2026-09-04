@@ -15,8 +15,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version-check:
+    name: Version check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check tag, Cargo.toml and init.lua all agree
+        run: |
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          lua_version=$(grep -m1 'PLUGIN_VERSION = ' lua/time-tracking-nvim/init.lua | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          tag_version="${tag#v}"
+          echo "tag: ${tag_version}  Cargo.toml: ${cargo_version}  init.lua: ${lua_version}"
+          if [ "${cargo_version}" != "${lua_version}" ] || [ "${cargo_version}" != "${tag_version}" ]; then
+            echo "::error::version mismatch — tag ${tag_version}, Cargo.toml ${cargo_version}, init.lua ${lua_version}"
+            exit 1
+          fi
+
   build:
     name: Build for ${{ matrix.target }}
+    needs: version-check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

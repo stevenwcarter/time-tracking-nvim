@@ -80,7 +80,10 @@ The integration tests are located in the `integration_tests/` directory and use 
 
 ## Release Process
 
-1. Update version in `Cargo.toml`
+1. Bump the version in **both** `Cargo.toml` (`version = "X.Y.Z"`) and
+   `lua/time-tracking-nvim/init.lua` (`PLUGIN_VERSION = "X.Y.Z"`). CI fails if
+   they disagree, and the release workflow additionally requires the git tag to
+   match.
 2. Update CHANGELOG.md (if exists)
 3. Commit changes
 4. Create and push a tag:
