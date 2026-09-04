@@ -47,6 +47,14 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The root workspace excludes integration_tests (Cargo.toml), so the
+      # clippy run above never descends into it. Lint it explicitly, on the
+      # one OS where that crate is already exercised.
+      - name: Run clippy (integration tests)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: integration_tests
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Run unit tests (main crate)
         run: cargo test
 

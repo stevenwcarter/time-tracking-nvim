@@ -147,7 +147,7 @@ fn test_is_win_time_tracking_file() {
 fn test_get_buffer_content() {
     // Create a buffer with some content
     let mut buf = api::create_buf(false, false).unwrap();
-    let test_lines = vec!["# Test Header", "Some content", "More content"];
+    let test_lines = ["# Test Header", "Some content", "More content"];
     buf.set_lines(.., false, test_lines.iter().cloned()).unwrap();
     
     // Set it as current buffer
