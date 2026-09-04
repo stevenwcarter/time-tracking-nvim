@@ -73,30 +73,53 @@ fn preview_win_in_current_tab(buf: &Buffer) -> Result<Option<Window>> {
     Ok(None)
 }
 
-/// Resolve the preview buffer and the window showing it, in one pass.
+/// The window showing `buf` in *any* tabpage, if any.
+///
+/// The global counterpart to [`preview_win_in_current_tab`], and deliberately
+/// used by [`close_preview`] alone: closing is the one operation that has to
+/// reach the preview wherever it lives. See that function for why.
+fn preview_win_anywhere(buf: &Buffer) -> Result<Option<Window>> {
+    for w in api::list_wins() {
+        if &w.get_buf()? == buf {
+            return Ok(Some(w));
+        }
+    }
+    Ok(None)
+}
+
+/// The preview buffer, from the handle cache or — on a miss — a buffer scan.
+///
+/// Primes the cache on a scan hit. Buffers are global in Neovim, so there is at
+/// most one of these no matter how many tabpages display it.
+fn find_preview_buf() -> Result<Option<Buffer>> {
+    if let Some(buf) = cached_preview_buf() {
+        return Ok(Some(buf));
+    }
+
+    for b in api::list_bufs() {
+        if is_preview_buf(&b)? {
+            set_cached_preview_buf(Some(b.clone()));
+            return Ok(Some(b));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Resolve the preview buffer and the window *in the current tabpage* showing
+/// it, in one pass.
 ///
 /// Returns `None` when no preview buffer exists; `Some((buf, None))` when the
-/// buffer exists but is not displayed. Consolidates the six copies of this
-/// lookup and gives the handle cache a single invalidation point.
+/// buffer exists but no window **in the current tabpage** is displaying it —
+/// which does not mean it is off screen, since another tabpage may still be
+/// showing it. That qualifier is the whole point of this lookup (B45): it is
+/// what lets a second tabpage open a preview of its own. It is also why
+/// [`close_preview`] does not use it.
+///
+/// Consolidates the visibility lookups and gives the handle cache a single
+/// invalidation point.
 fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
-    let buf = match cached_preview_buf() {
-        Some(buf) => Some(buf),
-        None => {
-            let mut found = None;
-            for b in api::list_bufs() {
-                if is_preview_buf(&b)? {
-                    found = Some(b);
-                    break;
-                }
-            }
-            if let Some(ref b) = found {
-                set_cached_preview_buf(Some(b.clone()));
-            }
-            found
-        }
-    };
-
-    let Some(buf) = buf else {
+    let Some(buf) = find_preview_buf()? else {
         return Ok(None);
     };
 
@@ -508,14 +531,36 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
     Ok(())
 }
 
-/// Closes the preview window and clears both preview caches.
+/// Closes the preview window — wherever it lives — and clears both preview
+/// caches.
+///
+/// The window scan here is [`preview_win_anywhere`], not the tab-scoped probe
+/// [`find_preview`] uses, for two reasons.
+///
+/// It is driven by `any_tracking_visible` (`src/utils.rs`), which enumerates
+/// every tabpage: a tab-local close would let the guard and the action disagree
+/// about scope, and would make `:TimeTrackingClose` a silent no-op whenever the
+/// user is in a tabpage that has no preview of its own.
+///
+/// And it is what makes clearing the caches below correct. With a global scan,
+/// "no window" means the preview is displayed nowhere at all, so forgetting it
+/// costs nothing. A tab-local scan would also take that path while another
+/// tabpage still had the preview on screen, dropping `LAST_OUTPUT` under a live
+/// preview — and the next render there would fail the dirty-check and rewrite
+/// the whole buffer, which is exactly the scroll-yanking repaint that cache
+/// exists to prevent (see [`write_preview_contents`]).
 ///
 /// When the preview is the only window left it is not closed at all:
 /// `nvim_win_close` refuses the last window with E444, so a fresh listed buffer
 /// is swapped into it instead. The caches are cleared on every path, including
 /// the early return taken when no preview is open.
 pub fn close_preview() -> Result<()> {
-    let Some((_, Some(mut win))) = find_preview()? else {
+    let preview_win = match find_preview_buf()? {
+        Some(buf) => preview_win_anywhere(&buf)?,
+        None => None,
+    };
+
+    let Some(mut win) = preview_win else {
         set_cached_preview_buf(None);
         set_last_output(None);
         return Ok(());

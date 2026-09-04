@@ -1373,6 +1373,74 @@ fn test_auto_open_gives_a_second_tabpage_its_own_preview_window() {
     cleanup_preview_buffers();
 }
 
+// Review-fix regression guard for `close_preview`'s scope.
+//
+// B45 (commit c2cdb47) made the shared preview lookup tab-scoped, and
+// `close_preview` was riding on it — so `:TimeTrackingClose` from a tabpage
+// without a preview of its own became a silent no-op, and the early-return arm
+// cleared `LAST_OUTPUT` while another tabpage still had that preview on screen.
+// The next render there failed the dirty-check and rewrote the whole buffer,
+// yanking its scroll position: precisely the cost the cache exists to prevent.
+//
+// `close_preview` scans globally again; the tab-scoped probe stays in place for
+// the visibility/auto-open paths (see the B45 test above, which must keep
+// passing). This test pins the split: after the close, nothing anywhere is
+// displaying the preview, which is what makes clearing both caches correct.
+#[nvim_oxi::test]
+fn test_close_preview_closes_a_preview_living_in_another_tabpage() {
+    cleanup_preview_buffers();
+    api::command("only").unwrap();
+
+    // Tab 1: a preview split, with `LAST_OUTPUT` primed to what it holds.
+    create_or_update_preview("# Summary\n- total: 1h").unwrap();
+
+    let tab1 = api::get_current_tabpage();
+    assert!(
+        tab_shows_preview(&tab1),
+        "precondition: tab 1 must be showing the preview"
+    );
+
+    // Tab 2: a fresh tabpage with no preview window of its own — the state in
+    // which the tab-scoped lookup reported "no preview open".
+    api::command("tabnew").unwrap();
+    let tab2 = api::get_current_tabpage();
+    assert_ne!(
+        tab1, tab2,
+        "precondition: :tabnew must produce a distinct tabpage from tab 1"
+    );
+    assert!(
+        !tab_shows_preview(&tab2),
+        "precondition: tab 2 must not be showing the preview"
+    );
+
+    close_preview().unwrap();
+
+    assert!(
+        !tab_shows_preview(&tab1),
+        "close_preview must close the preview window even though it lives in \
+         another tabpage, rather than no-opping and clearing the caches under \
+         a preview that is still on screen"
+    );
+
+    // `bufhidden=wipe`: closing the last window on the preview wipes the
+    // buffer. Nothing is left displaying it, so dropping LAST_OUTPUT and the
+    // buffer-handle cache on this path forgets nothing that is still live.
+    let preview_buf_survives = api::list_bufs().any(|b| {
+        b.get_name()
+            .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+            .unwrap_or(false)
+    });
+    assert!(
+        !preview_buf_survives,
+        "the preview buffer must be gone once close_preview closes its last window"
+    );
+
+    // Leave the shared Neovim instance as we found it.
+    api::command("tabclose").unwrap();
+    api::command("only").unwrap();
+    cleanup_preview_buffers();
+}
+
 /// A line write that always fails, for the B37 ordering test below.
 ///
 /// Borrows a genuine API failure rather than fabricating an error value:
