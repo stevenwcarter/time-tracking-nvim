@@ -237,6 +237,11 @@ local function is_trusted_download_url(url)
 	return host:match("%.githubusercontent%.com$") ~= nil
 end
 
+-- A complete SHA-256, bounded so it cannot latch onto a longer or shorter
+-- hex run: 64 hex characters with a non-hex character (or a string edge) on
+-- either side.
+local SHA256_HEX_PATTERN = "%f[%x]" .. string.rep("%x", 64) .. "%f[%X]"
+
 -- Compute the SHA-256 of a file.
 --
 -- Prefers a subprocess over reading the file into Lua: readfile/writefile
@@ -258,7 +263,13 @@ local function file_sha256(path)
 		return nil, "checksum command failed: " .. tostring(out and out.stderr or "?")
 	end
 
-	local digest = tostring(out.stdout):match("%x%x%x%x%x%x%x%x%x+")
+	-- Anchor to a full 64-character SHA-256 rather than "nine or more hex
+	-- characters": certutil echoes the file path in its transcript, so a path
+	-- like C:\Users\deadbeef1234\x.tmp contains a hex run that would otherwise
+	-- be read as the digest. Both outcomes are fail-closed refusals, never a
+	-- false accept, but the anchor removes a spurious-refusal class.
+	-- sha256sum/shasum are unaffected: their digest is first on the line.
+	local digest = tostring(out.stdout):match(SHA256_HEX_PATTERN)
 	if not digest then
 		return nil, "could not parse checksum output"
 	end
@@ -275,6 +286,38 @@ local function parse_sha256sums(text)
 		end
 	end
 	return sums
+end
+
+-- Decide whether a downloaded archive may be installed.
+--
+-- Pure, so the security decision is testable without a network: returns nil
+-- when installation is allowed, or a reason string explaining the refusal.
+--
+-- allow_unverified waives a *missing* digest only. A mismatch is refused
+-- unconditionally — it means the bytes on disk are not the bytes that were
+-- published, which no opt-in may override.
+local function checksum_verdict(expected_digest, actual_digest, allow_unverified)
+	if expected_digest then
+		if not actual_digest then
+			return "Could not compute the archive's checksum - refusing to install"
+		end
+		if actual_digest ~= expected_digest then
+			return string.format(
+				"Checksum mismatch (expected %s, got %s) - refusing to install",
+				expected_digest,
+				actual_digest
+			)
+		end
+		return nil
+	end
+
+	if allow_unverified then
+		return nil
+	end
+
+	return "No SHA256SUMS published for this release, so the binary cannot be "
+		.. "verified. Releases up to v0.1.7 predate checksums. To install "
+		.. "anyway, use setup({ allow_unverified_download = true })."
 end
 
 -- Download and extract binary from GitHub releases
@@ -374,34 +417,20 @@ local function download_binary(target, binary_path, callback, expected_version, 
 					local allow_unverified = opts and opts.allow_unverified
 
 					local function verify_then_extract(expected_digest)
+						local actual, digest_err
 						if expected_digest then
-							local actual, digest_err = file_sha256(temp_file)
+							actual, digest_err = file_sha256(temp_file)
 							if not actual then
 								vim.fn.delete(temp_dir, "rf")
 								callback(false, "Could not compute checksum: " .. tostring(digest_err))
 								return
 							end
-							if actual ~= expected_digest then
-								vim.fn.delete(temp_dir, "rf")
-								callback(
-									false,
-									string.format(
-										"Checksum mismatch for %s (expected %s, got %s) - refusing to install",
-										asset_name,
-										expected_digest,
-										actual
-									)
-								)
-								return
-							end
-						elseif not allow_unverified then
+						end
+
+						local refusal = checksum_verdict(expected_digest, actual, allow_unverified)
+						if refusal then
 							vim.fn.delete(temp_dir, "rf")
-							callback(
-								false,
-								"No SHA256SUMS published for this release, so the binary cannot be "
-									.. "verified. Releases up to v0.1.7 predate checksums. To install "
-									.. "anyway, use setup({ allow_unverified_download = true })."
-							)
+							callback(false, asset_name .. ": " .. refusal)
 							return
 						end
 
@@ -484,7 +513,14 @@ local function download_binary(target, binary_path, callback, expected_version, 
 						end)
 					end
 
-					if sums_url and is_trusted_download_url(sums_url) then
+					if sums_url and not is_trusted_download_url(sums_url) then
+						-- A SHA256SUMS URL that fails the host allowlist is a tampering signal,
+						-- not a missing asset. Reporting it as "no checksums published" would
+						-- nudge the user to set allow_unverified_download in response to an
+						-- attack, so refuse outright and do not mention the escape hatch.
+						vim.fn.delete(temp_dir, "rf")
+						callback(false, "Refusing untrusted SHA256SUMS URL: " .. tostring(sums_url))
+					elseif sums_url then
 						local sums_file = vim.fs.joinpath(temp_dir, "SHA256SUMS")
 						vim.system(curl_cmd({ "-L", "-o", sums_file, "--", sums_url }), {}, function(sums_result)
 							vim.schedule(function()
@@ -931,6 +967,7 @@ M._internal = {
 	is_trusted_download_url = is_trusted_download_url,
 	file_sha256 = file_sha256,
 	parse_sha256sums = parse_sha256sums,
+	checksum_verdict = checksum_verdict,
 }
 
 return M

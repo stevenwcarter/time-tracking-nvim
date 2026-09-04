@@ -94,4 +94,45 @@ H.describe("file_sha256", function()
   end)
 end)
 
+H.describe("checksum_verdict", function()
+  -- The gate's whole decision, isolated from the network so all four
+  -- combinations can be pinned. nil means "install"; a string is the refusal.
+
+  H.it("allows installation when the digest matches", function()
+    H.eq(internal.checksum_verdict("abc", "abc", false), nil)
+  end)
+
+  H.it("refuses a digest mismatch", function()
+    local reason = internal.checksum_verdict("abc", "def", false)
+    H.ok(reason, "a mismatch must be refused")
+    H.ok(reason:match("mismatch"), "the reason must say why: " .. tostring(reason))
+  end)
+
+  H.it("refuses a digest mismatch even when unverified downloads are allowed", function()
+    -- The asymmetry that makes the option safe: allow_unverified_download
+    -- waives a *missing* digest only. A mismatch means the bytes are not the
+    -- bytes that were published, which no opt-in may override.
+    local reason = internal.checksum_verdict("abc", "def", true)
+    H.ok(reason, "allow_unverified must not suppress a mismatch")
+    H.ok(reason:match("mismatch"), "the reason must say why: " .. tostring(reason))
+  end)
+
+  H.it("refuses a missing digest by default", function()
+    local reason = internal.checksum_verdict(nil, nil, false)
+    H.ok(reason, "a missing SHA256SUMS must be refused when not opted in")
+    H.ok(reason:match("SHA256SUMS"), "the reason must name the missing asset")
+  end)
+
+  H.it("allows a missing digest only when explicitly opted in", function()
+    H.eq(internal.checksum_verdict(nil, nil, true), nil)
+  end)
+
+  H.it("refuses when the digest could not be computed", function()
+    -- Defensive: a caller that reaches the verdict without an actual digest
+    -- refuses rather than installs, in the same spirit as `opts and
+    -- opts.allow_unverified`.
+    H.ok(internal.checksum_verdict("abc", nil, true), "no actual digest must be refused")
+  end)
+end)
+
 return H
