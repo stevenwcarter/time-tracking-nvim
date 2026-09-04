@@ -384,6 +384,33 @@ local function checksum_verdict(expected_digest, actual_digest, allow_unverified
 		.. "anyway, use setup({ allow_unverified_download = true })."
 end
 
+-- Install a downloaded library at `dest` on a fresh inode.
+--
+-- This used to be `cp extracted dest`, which truncates and rewrites the
+-- existing file in place, keeping its inode. macOS caches a file's
+-- code-signature blob against the vnode. Once the previous library had been
+-- loaded by any Neovim since boot, overwriting its bytes left that stale
+-- blob in place, every page of the new library failed validation, and each
+-- Neovim launch was SIGKILLed with termination reason CODESIGNING "Invalid
+-- Page": exit 137, nothing on screen, nothing in nvim.log, on every launch
+-- until the vnode was evicted. Copying to a sibling temp name and renaming
+-- over `dest` gives the new bytes a new inode, so the kernel reads the new
+-- signature. rename(2) replaces atomically on POSIX; libuv uses
+-- MOVEFILE_REPLACE_EXISTING on Windows. fs_copyfile preserves mode bits.
+local function install_binary(src, dest)
+	local tmp = string.format("%s.%d.tmp", dest, uv.os_getpid())
+	local ok, err = uv.fs_copyfile(src, tmp)
+	if not ok then
+		return false, "copy failed: " .. tostring(err)
+	end
+	ok, err = uv.fs_rename(tmp, dest)
+	if not ok then
+		uv.fs_unlink(tmp)
+		return false, "rename failed: " .. tostring(err)
+	end
+	return true
+end
+
 -- Download and extract binary from GitHub releases
 local function download_binary(target, binary_path, callback, expected_version, opts)
 	-- Ask for the release we actually want. Falling back to /latest only when
@@ -547,52 +574,45 @@ local function download_binary(target, binary_path, callback, expected_version, 
 									return
 								end
 
-								local move_cmd = { "cp", extracted_binary, binary_path }
-								vim.system(move_cmd, {}, function(move_result)
-									vim.schedule(function()
-										-- Clean up temp files
-										vim.fn.delete(temp_dir, "rf")
+								local installed, install_err = install_binary(extracted_binary, binary_path)
+								-- Clean up temp files
+								vim.fn.delete(temp_dir, "rf")
 
-										if move_result.code ~= 0 then
-											callback(
-												false,
-												"Failed to copy binary to target location: " .. (move_result.stderr or "")
-											)
-											return
-										end
+								if not installed then
+									callback(false, "Failed to install binary to target location: " .. tostring(install_err))
+									return
+								end
 
-										-- Record the tag we actually downloaded, not the one we asked
-										-- for: with a pinned plugin tag these can differ, and recording
-										-- the request made every later version comparison a no-op.
-										local resolved_tag = release_info.tag_name
-										local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
+								-- Record the tag we actually downloaded, not the one we asked
+								-- for: with a pinned plugin tag these can differ, and recording
+								-- the request made every later version comparison a no-op.
+								local resolved_tag = release_info.tag_name
+								local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
 
-										if expected_version and version_to_store ~= expected_version then
-											echo({
-												{ "time-tracking-nvim: ", "WarningMsg" },
-												{
-													string.format(
-														"requested v%s but the release resolved to %s; recording %s",
-														expected_version,
-														tostring(resolved_tag),
-														version_to_store
-													),
-													"Normal",
-												},
-											})
-										end
+								if expected_version and version_to_store ~= expected_version then
+									echo({
+										{ "time-tracking-nvim: ", "WarningMsg" },
+										{
+											string.format(
+												"requested v%s but the release resolved to %s; recording %s",
+												expected_version,
+												tostring(resolved_tag),
+												version_to_store
+											),
+											"Normal",
+										},
+									})
+								end
 
-										if not write_binary_version(version_to_store) then
-											-- Not a fatal error, just warn
-											echo({
-												{ "time-tracking-nvim: ", "WarningMsg" },
-												{ "Warning: Could not save version info", "Normal" },
-											})
-										end
+								if not write_binary_version(version_to_store) then
+									-- Not a fatal error, just warn
+									echo({
+										{ "time-tracking-nvim: ", "WarningMsg" },
+										{ "Warning: Could not save version info", "Normal" },
+									})
+								end
 
-										callback(true, "Binary downloaded successfully")
-									end)
-								end)
+								callback(true, "Binary downloaded successfully")
 							end)
 						end)
 					end
@@ -1056,7 +1076,8 @@ function M.test()
 end
 
 -- Test seam. Not part of the public API; contents may change without notice.
--- Only pure, side-effect-free helpers belong here.
+-- Only pure helpers, or ones whose side effects stay inside paths they are
+-- given, belong here.
 M._internal = {
 	PLUGIN_VERSION = PLUGIN_VERSION,
 	is_version_newer = is_version_newer,
@@ -1066,6 +1087,7 @@ M._internal = {
 	file_sha256 = file_sha256,
 	parse_sha256sums = parse_sha256sums,
 	checksum_verdict = checksum_verdict,
+	install_binary = install_binary,
 }
 
 return M
