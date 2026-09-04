@@ -214,6 +214,26 @@ pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
     update_preview_fn(config)
 }
 
+/// Is a window in the current tabpage showing the preview?
+fn preview_is_open() -> Result<bool> {
+    Ok(matches!(find_preview()?, Some((_, Some(_)))))
+}
+
+/// Render the current buffer's day summary into the preview.
+///
+/// The single read-format-write path: every entry point that shows tracking
+/// data goes through here, so the formatter arguments are specified once.
+fn render_current_buffer(config: &Config) -> Result<()> {
+    let buffer_content = get_buffer_content()?;
+    let formatted_output = config.get_formatter().day_summary(
+        &buffer_content,
+        "",
+        config.get_prefix(),
+        config.get_suffix(),
+    );
+    create_or_update_preview(&formatted_output)
+}
+
 /// `:TimeTrackingToggle`: closes the preview when a window is showing it,
 /// otherwise renders the current buffer's day summary into a new one.
 ///
@@ -241,19 +261,10 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
-
-    if has_preview {
+    if preview_is_open()? {
         close_preview()?;
     } else {
-        let buffer_content = get_buffer_content()?;
-        let formatted_output = config.get_formatter().day_summary(
-            &buffer_content,
-            "",
-            config.get_prefix(),
-            config.get_suffix(),
-        );
-        create_or_update_preview(&formatted_output)?;
+        render_current_buffer(config)?;
     }
 
     Ok(())
@@ -269,17 +280,8 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
-
-    if has_preview {
-        let buffer_content = get_buffer_content()?;
-        let formatted_output = config.get_formatter().day_summary(
-            &buffer_content,
-            "",
-            config.get_prefix(),
-            config.get_suffix(),
-        );
-        create_or_update_preview(&formatted_output)?;
+    if preview_is_open()? {
+        render_current_buffer(config)?;
     }
 
     Ok(())
@@ -490,17 +492,8 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    let has_preview = matches!(find_preview()?, Some((_, Some(_))));
-
-    if !has_preview {
-        let buffer_content = get_buffer_content()?;
-        let formatted_output = config.get_formatter().day_summary(
-            &buffer_content,
-            "",
-            config.get_prefix(),
-            config.get_suffix(),
-        );
-        create_or_update_preview(&formatted_output)?;
+    if !preview_is_open()? {
+        render_current_buffer(config)?;
     }
 
     Ok(())
