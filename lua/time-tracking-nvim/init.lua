@@ -663,6 +663,162 @@ local function load_native()
 	return "ok", native
 end
 
+-- Are the external tools auto-download needs present?
+--
+-- `fatal` separates the two callers. A binary that is missing cannot be
+-- recovered without curl, so that caller refuses and points at a manual
+-- install; a binary that is merely out of date can still be loaded, so that
+-- caller only warns.
+--
+-- `fatal` also gates the extractor check, because the update path has never
+-- looked at tar or unzip: it starts downloads it may be unable to unpack.
+-- That is bughunt B28, preserved here as it stands rather than fixed.
+--
+-- Returns true when the download may go ahead, or false and the echo chunks
+-- describing what is missing.
+local function have_download_tools(fatal)
+	if vim.fn.executable("curl") ~= 1 then
+		if not fatal then
+			return false, {
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "curl is required for auto-update but not found", "Normal" },
+				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
+			}
+		end
+		return false, {
+			{ "time-tracking-nvim: ", "ErrorMsg" },
+			{ "curl is required for auto-download but not found", "Normal" },
+			{ "\nPlease install curl or download manually from: ", "Normal" },
+			{ RELEASES_URL, "Underlined" },
+		}
+	end
+
+	if fatal and vim.fn.executable("tar") ~= 1 and vim.fn.executable("unzip") ~= 1 then
+		return false, {
+			{ "time-tracking-nvim: ", "ErrorMsg" },
+			{ "tar or unzip is required for auto-download but not found", "Normal" },
+			{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
+			{ RELEASES_URL, "Underlined" },
+		}
+	end
+
+	return true
+end
+
+-- The two label tables below hold everything that differs between fetching a
+-- binary that is missing and replacing one that is out of date: the wording of
+-- every message, and `fatal`, the one behavioural difference. Keeping the
+-- severity in the same table as the wording is what stops the pair drifting
+-- apart again.
+
+-- First install. There is no binary to fall back to, so missing tooling is
+-- fatal and a failed download ends with manual installation instructions.
+local function install_labels(target, binary_path)
+	return {
+		fatal = true,
+		progress = "Binary not found, downloading for " .. target .. "...",
+		downloaded = "Binary downloaded successfully!",
+		loaded = "Plugin loaded successfully!",
+		load_failed = "Failed to load native module after download: ",
+		load_hint = "\nPlease check the binary permissions and try restarting Neovim",
+		failed = function(message)
+			return {
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "Auto-download failed: ", "Normal" },
+				{ message, "ErrorMsg" },
+				{ "\n\nManual installation instructions:", "Normal" },
+				{ "\n1. Go to: ", "Normal" },
+				{ RELEASES_URL, "Underlined" },
+				{ "\n2. Download: ", "Normal" },
+				{ "time-tracking-nvim-" .. target .. (target:match("windows") and ".zip" or ".tar.gz"), "String" },
+				{ "\n3. Extract to: ", "Normal" },
+				{ vim.fs.dirname(binary_path), "Directory" },
+			}
+		end,
+	}
+end
+
+-- Update. The binary on disk still works well enough to load, so nothing on
+-- this path is fatal and every failure ends by saying so.
+local function update_labels(update_reason)
+	return {
+		fatal = false,
+		progress = "Binary update needed (" .. update_reason .. "), downloading...",
+		downloaded = "Binary updated successfully!",
+		loaded = "Plugin updated and loaded successfully!",
+		load_failed = "Failed to load native module after update: ",
+		load_hint = "\nPlease restart Neovim",
+		failed = function(message)
+			return {
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "Auto-update failed: ", "Normal" },
+				{ message, "ErrorMsg" },
+				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
+			}
+		end,
+	}
+end
+
+-- Download the native library and, once it arrives, add it to cpath and load
+-- it. `labels` is one of the two tables above, and is the only thing that
+-- separates the install path from the update path.
+--
+-- Returns true when a download was actually started. The update caller reads
+-- that to decide whether to fall through to the binary it already has; the
+-- install caller has nothing to fall through to and ignores it.
+--
+-- The download is asynchronous: this returns as soon as one is under way, and
+-- everything inside the callback runs long after setup() has returned.
+local function download_then_load(target, binary_path, config, labels)
+	echo({
+		{ "time-tracking-nvim: ", "Title" },
+		{ labels.progress, "Normal" },
+	}, { transient = true })
+
+	local ok, missing = have_download_tools(labels.fatal)
+	if not ok then
+		echo(missing)
+		return false
+	end
+
+	download_binary(target, binary_path, function(success, message)
+		if not success then
+			echo(labels.failed(message))
+			return
+		end
+
+		echo({
+			{ "time-tracking-nvim: ", "MoreMsg" },
+			{ labels.downloaded, "Normal" },
+		})
+
+		-- cpath first: load_native cannot find a library that is not on it.
+		add_to_cpath(binary_path)
+
+		local status, value = load_native()
+		if status == "load_failed" then
+			echo({
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ labels.load_failed, "Normal" },
+				{ value, "ErrorMsg" },
+				{ labels.load_hint, "Normal" },
+			})
+		elseif status == "init_failed" then
+			echo({
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
+			})
+		else
+			echo({
+				{ "time-tracking-nvim: ", "MoreMsg" },
+				{ labels.loaded, "Normal" },
+			})
+		end
+	end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
+
+	return true
+end
+
 -- Entry point: require("time-tracking-nvim").setup(opts).
 --
 -- opts, all optional and defaulted in default_config above:
@@ -720,154 +876,17 @@ function M.setup(opts)
 	
 	-- Handle missing binary
 	if not binary_exists and config.auto_download then
-		echo({
-			{ "time-tracking-nvim: ", "Title" },
-			{ "Binary not found, downloading for " .. target .. "...", "Normal" },
-		}, { transient = true })
-
-		-- Check if we have the required tools
-		local has_curl = vim.fn.executable("curl") == 1
-		local has_tar = vim.fn.executable("tar") == 1
-		local has_unzip = vim.fn.executable("unzip") == 1
-
-		if not has_curl then
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
-				{ "curl is required for auto-download but not found", "Normal" },
-				{ "\nPlease install curl or download manually from: ", "Normal" },
-				{ RELEASES_URL, "Underlined" },
-			})
-			return
-		end
-
-		if not has_tar and not has_unzip then
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
-				{ "tar or unzip is required for auto-download but not found", "Normal" },
-				{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
-				{ RELEASES_URL, "Underlined" },
-			})
-			return
-		end
-
-		download_binary(target, binary_path, function(success, message)
-			if success then
-				echo({
-					{ "time-tracking-nvim: ", "MoreMsg" },
-					{ "Binary downloaded successfully!", "Normal" },
-				})
-
-				-- Add binary directory to cpath before trying to load
-				add_to_cpath(binary_path)
-
-				-- Try to load the native module now
-				local status, value = load_native()
-				if status == "load_failed" then
-					echo({
-						{ "time-tracking-nvim: ", "ErrorMsg" },
-						{ "Failed to load native module after download: ", "Normal" },
-						{ value, "ErrorMsg" },
-						{ "\nPlease check the binary permissions and try restarting Neovim", "Normal" },
-					})
-				elseif status == "init_failed" then
-					echo({
-						{ "time-tracking-nvim: ", "ErrorMsg" },
-						{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
-					})
-				else
-					echo({
-						{ "time-tracking-nvim: ", "MoreMsg" },
-						{ "Plugin loaded successfully!", "Normal" },
-					})
-				end
-			else
-				echo({
-					{
-						"time-tracking-nvim: ",
-						"ErrorMsg",
-					},
-					{ "Auto-download failed: ", "Normal" },
-					{
-						message,
-						"ErrorMsg",
-					},
-					{ "\n\nManual installation instructions:", "Normal" },
-					{ "\n1. Go to: ", "Normal" },
-					{
-						RELEASES_URL,
-						"Underlined",
-					},
-					{ "\n2. Download: ", "Normal" },
-					{ "time-tracking-nvim-" .. target .. (target:match("windows") and ".zip" or ".tar.gz"), "String" },
-					{ "\n3. Extract to: ", "Normal" },
-					{
-						vim.fs.dirname(binary_path),
-						"Directory",
-					},
-				})
-			end
-		end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
+		-- Returns either way. Without a binary there is nothing to fall back
+		-- to, so a download that could not even be started ends setup here.
+		download_then_load(target, binary_path, config, install_labels(target, binary_path))
 		return
 	-- Handle version updates for existing binaries
 	elseif needs_update and config.auto_download and config.auto_update then
-		echo({
-			{ "time-tracking-nvim: ", "Title" },
-			{ "Binary update needed (" .. update_reason .. "), downloading...", "Normal" },
-		}, { transient = true })
-
-		-- Check if we have the required tools
-		local has_curl = vim.fn.executable("curl") == 1
-		local has_tar = vim.fn.executable("tar") == 1
-		local has_unzip = vim.fn.executable("unzip") == 1
-
-		if not has_curl then
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
-				{ "curl is required for auto-update but not found", "Normal" },
-				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
-			})
-		else
-			download_binary(target, binary_path, function(success, message)
-				if success then
-					echo({
-						{ "time-tracking-nvim: ", "MoreMsg" },
-						{ "Binary updated successfully!", "Normal" },
-					})
-
-					-- Add binary directory to cpath before trying to load
-					add_to_cpath(binary_path)
-
-					-- Try to load the native module now
-					local status, value = load_native()
-					if status == "load_failed" then
-						echo({
-							{ "time-tracking-nvim: ", "ErrorMsg" },
-							{ "Failed to load native module after update: ", "Normal" },
-							{ value, "ErrorMsg" },
-							{ "\nPlease restart Neovim", "Normal" },
-						})
-					elseif status == "init_failed" then
-						echo({
-							{ "time-tracking-nvim: ", "ErrorMsg" },
-							{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
-						})
-					else
-						echo({
-							{ "time-tracking-nvim: ", "MoreMsg" },
-							{ "Plugin updated and loaded successfully!", "Normal" },
-						})
-					end
-				else
-					echo({
-						{ "time-tracking-nvim: ", "ErrorMsg" },
-						{ "Auto-update failed: ", "Normal" },
-						{ message, "ErrorMsg" },
-						{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
-					})
-				end
-			end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
+		if download_then_load(target, binary_path, config, update_labels(update_reason)) then
 			return
 		end
+		-- Deliberately no return. The tooling check failed, but an out-of-date
+		-- binary is still a binary, so the tail below loads the one on disk.
 	elseif needs_update and not config.auto_update then
 		echo({
 			{ "time-tracking-nvim: ", "WarningMsg" },
