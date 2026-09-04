@@ -197,9 +197,11 @@ end
 --                                   includes plain HTTP, so a 302 to http://
 --                                   would fetch the library we are about to
 --                                   dlopen in cleartext.
---   --fail-with-body              : without -f curl exits 0 on an HTTP error,
---                                   so a 403 rate-limit body parsed as JSON
---                                   and surfaced as "unsupported platform".
+--   <fail flag>                   : without -f/--fail-with-body curl exits 0
+--                                   on an HTTP error, so a 403 rate-limit body
+--                                   parsed as JSON and surfaced as "unsupported
+--                                   platform". See `curl_fail_flag` below for
+--                                   which of the two this resolves to.
 --   --max-time/--connect-timeout  : a black-holed connection otherwise left
 --                                   the callback pending forever.
 local CURL_HARDENING = {
@@ -208,7 +210,6 @@ local CURL_HARDENING = {
 	"--proto-redir",
 	"=https",
 	"--tlsv1.2",
-	"--fail-with-body",
 	"--max-redirs",
 	"5",
 	"--connect-timeout",
@@ -219,10 +220,29 @@ local CURL_HARDENING = {
 	"2",
 }
 
--- Build a curl argv: {"curl", <hardening>, unpack(extra)}
+-- Whether this curl build understands `--fail-with-body` (added in curl
+-- 7.76.0, April 2021). RHEL 8 ships 7.61 and Ubuntu 20.04 ships 7.68 — on
+-- those, curl treats it as an unrecognized option and exits 2 during option
+-- parsing, before a single byte is sent, so auto-download would stop working
+-- outright rather than degrading. Probed once, as a local subprocess spawn
+-- with no network access, and cached: `-f` is decades old and gives the same
+-- fail-on-error behaviour, at the cost of discarding the error body that
+-- `--fail-with-body` keeps on stdout (see the exit-code handling in
+-- `download_binary`, which accounts for that difference).
+local curl_fail_flag_cache = nil
+local function curl_fail_flag()
+	if curl_fail_flag_cache == nil then
+		local probe = vim.system({ "curl", "--fail-with-body", "--version" }, {}):wait(2000)
+		curl_fail_flag_cache = (probe.code == 0) and "--fail-with-body" or "-f"
+	end
+	return curl_fail_flag_cache
+end
+
+-- Build a curl argv: {"curl", <hardening>, <fail flag>, unpack(extra)}
 local function curl_cmd(extra)
 	local cmd = { "curl" }
 	vim.list_extend(cmd, CURL_HARDENING)
+	table.insert(cmd, curl_fail_flag())
 	vim.list_extend(cmd, extra)
 	return cmd
 end
@@ -344,16 +364,36 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	local release_url = expected_version and (api_base .. "/tags/v" .. expected_version)
 		or (api_base .. "/latest")
 
-	local cmd = curl_cmd({ "-L", "-s", release_url })
+	-- -S (in addition to -s) so a hard failure below still has a real curl
+	-- error on stderr instead of an empty string; -s alone suppresses it.
+	local cmd = curl_cmd({ "-L", "-s", "-S", release_url })
 
 	vim.system(cmd, {}, function(result)
 		vim.schedule(function()
-			if result.code ~= 0 then
-				callback(false, "Failed to fetch release info: " .. (result.stderr or ""))
+			local ok, release_info = pcall(vim.json.decode, result.stdout)
+
+			-- curl's fail flag (`--fail-with-body`, or the old-curl fallback
+			-- `-f` — see `curl_fail_flag`) makes curl exit non-zero on an HTTP
+			-- error, but `--fail-with-body` still writes the response body to
+			-- stdout. So a 403/404 both fails this exit-code check *and*
+			-- decodes to a table — treat that case as "keep going below",
+			-- where the guards produce a far better message ("GitHub API
+			-- error: API rate limit exceeded…") than the bare exit code would.
+			-- Only bail out here when there is truly nothing to decode: a
+			-- network/TLS failure, or the `-f` fallback, which discards the
+			-- body along with the exit code.
+			if result.code ~= 0 and not (ok and type(release_info) == "table") then
+				local reason = result.stderr
+				if not reason or reason == "" then
+					reason = tostring(result.stdout):sub(1, 200)
+				end
+				if not reason or reason == "" then
+					reason = "curl exited with code " .. tostring(result.code)
+				end
+				callback(false, "Failed to fetch release info: " .. reason)
 				return
 			end
 
-			local ok, release_info = pcall(vim.json.decode, result.stdout)
 			if not ok then
 				callback(false, "Failed to parse release info")
 				return
