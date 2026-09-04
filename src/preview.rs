@@ -20,6 +20,13 @@ thread_local! {
     ///
     /// Cleared whenever the preview buffer is created or destroyed, so a
     /// wiped-and-recreated preview always gets a full write.
+    ///
+    /// Invariant this cache depends on: it tracks what was last *written*,
+    /// not what the buffer currently *contains*, so it is only correct as
+    /// long as [`create_or_update_preview`] is the sole writer to the preview
+    /// buffer's contents. If another write path is ever added, this cache
+    /// goes stale silently and the dirty-check in `create_or_update_preview`
+    /// will skip writes the buffer actually needs.
     static LAST_OUTPUT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -275,7 +282,14 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
     // Update buffer contents, skipping the rewrite when nothing changed.
     // The rendered day summary is unchanged for most keystrokes, and rewriting
     // yanks the preview's scroll position and repaints the whole split.
-    if !(last_output_matches(output) && buf.is_valid()) {
+    //
+    // No `buf.is_valid()` check here: `buf` is either the buffer just created
+    // above, a live entry from `list_bufs()`, or `find_preview`'s cache,
+    // which already revalidates before returning it (see
+    // `cached_preview_buf`) — so it is always valid at this point, and
+    // checking again would only cost an FFI call while suggesting a trust
+    // boundary that isn't there.
+    if !last_output_matches(output) {
         let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
         api::set_option_value("modifiable", true, &bopts)?;
         let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
