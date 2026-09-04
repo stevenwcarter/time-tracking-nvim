@@ -37,8 +37,18 @@ function M.check()
 	health.ok(string.format("Platform: %s (.%s)", platform_info.target, platform_info.ext))
 
 	-- Binary
-	local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
-	local binary_path = vim.fs.joinpath(plugin_root, "lua", "time_tracking_nvim." .. platform_info.ext)
+	local binary_path
+	if internal.get_binary_path then
+		binary_path = internal.get_binary_path()
+	end
+
+	if not binary_path then
+		health.error("Native library not found at " .. tostring(binary_path), {
+			"Run :lua require('time-tracking-nvim').download()",
+			"Or build locally with ./build.sh",
+		})
+		return
+	end
 
 	if vim.fn.filereadable(binary_path) ~= 1 then
 		health.error("Native library not found at " .. binary_path, {
@@ -59,13 +69,9 @@ function M.check()
 	health.ok(string.format("Native library: %s (%d bytes)", binary_path, stat.size))
 
 	-- Versions
-	local version_file = binary_path .. ".version"
 	local binary_version = "unknown"
-	if vim.fn.filereadable(version_file) == 1 then
-		local content = vim.fn.readfile(version_file)
-		if #content > 0 then
-			binary_version = vim.trim(content[1])
-		end
+	if internal.read_binary_version then
+		binary_version = internal.read_binary_version() or "unknown"
 	end
 
 	local plugin_version = internal.PLUGIN_VERSION
@@ -81,7 +87,11 @@ function M.check()
 	end
 
 	-- cpath
-	if package.cpath:find(vim.fs.joinpath(plugin_root, "lua"), 1, true) then
+	local root
+	if internal.plugin_root then
+		root = internal.plugin_root()
+	end
+	if root and package.cpath:find(vim.fs.joinpath(root, "lua"), 1, true) then
 		health.ok("Binary directory is on package.cpath")
 	else
 		health.warn("Binary directory is not on package.cpath", {
@@ -90,18 +100,21 @@ function M.check()
 	end
 
 	-- Load
-	local ok, native = pcall(require, "time_tracking_nvim")
-	if not ok then
-		health.error("Failed to load the native module: " .. tostring(native), {
-			"Check the library's permissions and architecture",
-			"cpath: " .. package.cpath,
-		})
-	elseif type(native) == "table" and native.error then
-		health.error("Native module loaded but failed to initialize: " .. tostring(native.error), {
+	local status, value
+	if internal.load_native then
+		status, value = internal.load_native()
+	end
+	if status == "ok" then
+		health.ok("Native module loads and initializes")
+	elseif status == "init_failed" then
+		health.error("Native module loaded but failed to initialize: " .. tostring(value), {
 			"Check your time-tracking-cli configuration",
 		})
 	else
-		health.ok("Native module loads and initializes")
+		health.error("Failed to load the native module: " .. tostring(value), {
+			"Check the library's permissions and architecture",
+			"cpath: " .. package.cpath,
+		})
 	end
 
 	-- Commands

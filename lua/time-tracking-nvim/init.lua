@@ -100,10 +100,19 @@ local function get_platform_info()
 	return platform[arch], nil
 end
 
+-- The plugin's root directory: three levels up from this file
+-- (lua/time-tracking-nvim/init.lua). debug.getinfo(1, "S") describes the
+-- currently *running* function, i.e. this one — its source is always
+-- init.lua regardless of which module calls plugin_root(), so exposing it
+-- through M._internal for health.lua to call is safe.
+local function plugin_root()
+	local info = debug.getinfo(1, "S")
+	return vim.fn.fnamemodify(info.source:sub(2), ":h:h:h")
+end
+
 -- Get the path where the binary should be located
 local function get_binary_path()
-	local info = debug.getinfo(1, "S")
-	local plugin_root = vim.fn.fnamemodify(info.source:sub(2), ":h:h:h")
+	local root = plugin_root()
 	local platform_info, err = get_platform_info()
 
 	if not platform_info then
@@ -111,7 +120,7 @@ local function get_binary_path()
 	end
 
 	local binary_name = "time_tracking_nvim." .. platform_info.ext
-	return vim.fs.joinpath(plugin_root, "lua", binary_name), platform_info.target
+	return vim.fs.joinpath(root, "lua", binary_name), platform_info.target
 end
 
 -- Get version file path (stores the version of the downloaded binary)
@@ -1026,6 +1035,10 @@ M._internal = {
 	checksum_verdict = checksum_verdict,
 	install_binary = install_binary,
 	load_native = load_native,
+	plugin_root = plugin_root,
+	get_binary_path = get_binary_path,
+	get_version_file_path = get_version_file_path,
+	read_binary_version = read_binary_version,
 }
 
 return M
