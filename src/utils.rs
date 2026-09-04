@@ -47,65 +47,81 @@ static DATA_DIR_MEMO: Mutex<Option<(String, Option<PathBuf>)>> = Mutex::new(None
 /// restart to recover; only a successful resolution is stable enough to
 /// memoize; a failure is retried every call, same as before B15.
 fn resolved_data_dir(config: &Config) -> Option<PathBuf> {
-    let configured = config.get_data_directory().unwrap_or("").to_owned();
+    let configured = config.get_data_directory().unwrap_or("");
 
-    let mut memo = match DATA_DIR_MEMO.lock() {
-        Ok(memo) => memo,
-        // A poisoned lock must not disable file detection; fall back to an
-        // uncached resolve.
-        Err(poisoned) => poisoned.into_inner(),
+    // Scope the guard: everything below this block does a syscall or calls into
+    // Neovim, and holding a process-wide mutex across either is what
+    // clippy::significant_drop_tightening is warning about.
+    let cached = {
+        let memo = match DATA_DIR_MEMO.lock() {
+            Ok(memo) => memo,
+            // A poisoned lock must not disable file detection; fall back to an
+            // uncached resolve.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        memo.as_ref()
+            .filter(|(key, _)| key.as_str() == configured)
+            .map(|(_, value)| value.clone())
     };
 
-    if let Some((key, value)) = memo.as_ref()
-        && key == &configured
-    {
-        return value.clone();
+    if let Some(value) = cached {
+        return value;
     }
 
-    match fs::canonicalize(&configured) {
+    match fs::canonicalize(configured) {
         Ok(dir) => {
-            *memo = Some((configured, Some(dir.clone())));
+            let mut memo = match DATA_DIR_MEMO.lock() {
+                Ok(memo) => memo,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *memo = Some((configured.to_owned(), Some(dir.clone())));
+            drop(memo);
             Some(dir)
         }
         Err(e) => {
             // Leave `memo` untouched: a miss is not cached (see doc comment
             // above), and must not evict a previously cached successful
             // resolution for a different key either.
-            //
-            // `v:exiting` is non-nil once Neovim has begun quitting. Two
-            // pre-existing integration tests (test_time_tracking_with_config_
-            // creates_{commands,autocommands}) drop their Config's backing
-            // TempDir when the Rust test function returns, and separately
-            // register a `schedule()`-deferred TimeTrackingAutoOpen callback
-            // (see lib.rs) at startup that is still pending at that point.
-            // That callback then runs during the harness's `:qall!`-driven
-            // shutdown — confirmed empirically via `v:exiting` — observing a
-            // directory the *test itself* just deleted, not a real
-            // misconfiguration. Calling the nvim API at that point crashes
-            // the process, so skip the warning outright: nvim is about to
-            // exit anyway, so nothing would show it to a user.
-            //
-            // `DATA_DIR_WARNED.call_once` is called from right here, at the
-            // point the message is actually written, not from an outer gate
-            // that decides whether to attempt it — so a call suppressed by
-            // `is_exiting` above never marks the warning "done", and a later
-            // call (this process is not, in fact, exiting) still gets to try.
-            let is_exiting = api::get_vvar::<Option<i64>>("exiting")
-                .ok()
-                .flatten()
-                .is_some();
-            if !is_exiting {
-                DATA_DIR_WARNED.call_once(|| {
-                    log_error!(
-                        "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
-                         The preview will not open for any file until this is fixed.",
-                        configured,
-                        e
-                    );
-                });
-            }
+            warn_data_dir_unresolved(configured, &e);
             None
         }
+    }
+}
+
+/// Warn once that the configured data directory could not be resolved.
+///
+/// `v:exiting` is non-nil once Neovim has begun quitting. Two
+/// pre-existing integration tests (test_time_tracking_with_config_
+/// creates_{commands,autocommands}) drop their Config's backing
+/// TempDir when the Rust test function returns, and separately
+/// register a `schedule()`-deferred TimeTrackingAutoOpen callback
+/// (see lib.rs) at startup that is still pending at that point.
+/// That callback then runs during the harness's `:qall!`-driven
+/// shutdown — confirmed empirically via `v:exiting` — observing a
+/// directory the *test itself* just deleted, not a real
+/// misconfiguration. Calling the nvim API at that point crashes
+/// the process, so skip the warning outright: nvim is about to
+/// exit anyway, so nothing would show it to a user.
+///
+/// `DATA_DIR_WARNED.call_once` is called from right here, at the
+/// point the message is actually written, not from an outer gate
+/// that decides whether to attempt it — so a call suppressed by
+/// `is_exiting` above never marks the warning "done", and a later
+/// call (this process is not, in fact, exiting) still gets to try.
+fn warn_data_dir_unresolved(configured: &str, e: &std::io::Error) {
+    let is_exiting = api::get_vvar::<Option<i64>>("exiting")
+        .ok()
+        .flatten()
+        .is_some();
+    if !is_exiting {
+        DATA_DIR_WARNED.call_once(|| {
+            log_error!(
+                "[time-tracking-nvim] could not resolve data directory {:?}: {}. \
+                 The preview will not open for any file until this is fixed.",
+                configured,
+                e
+            );
+        });
     }
 }
 
