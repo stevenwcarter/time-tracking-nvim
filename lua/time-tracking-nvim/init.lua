@@ -651,6 +651,25 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	end)
 end
 
+-- Load the native module and classify the outcome.
+--
+-- The module can fail in two distinct ways that callers must report
+-- differently: the shared library may not load at all, or it may load and
+-- then report an initialization failure through its `error` key.
+--
+-- Returns status ("ok" | "load_failed" | "init_failed") and a second value:
+-- the module on "ok", otherwise the error value.
+local function load_native()
+	local ok, native = pcall(require, "time_tracking_nvim")
+	if not ok then
+		return "load_failed", native
+	end
+	if type(native) == "table" and native.error then
+		return "init_failed", native.error
+	end
+	return "ok", native
+end
+
 -- Entry point: require("time-tracking-nvim").setup(opts).
 --
 -- opts, all optional and defaulted in default_config above:
@@ -749,26 +768,24 @@ function M.setup(opts)
 				add_to_cpath(binary_path)
 
 				-- Try to load the native module now
-				local ok, native = pcall(require, "time_tracking_nvim")
-				if not ok then
+				local status, value = load_native()
+				if status == "load_failed" then
 					echo({
 						{ "time-tracking-nvim: ", "ErrorMsg" },
 						{ "Failed to load native module after download: ", "Normal" },
-						{ native, "ErrorMsg" },
+						{ value, "ErrorMsg" },
 						{ "\nPlease check the binary permissions and try restarting Neovim", "Normal" },
 					})
+				elseif status == "init_failed" then
+					echo({
+						{ "time-tracking-nvim: ", "ErrorMsg" },
+						{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
+					})
 				else
-					if type(native) == "table" and native.error then
-						echo({
-							{ "time-tracking-nvim: ", "ErrorMsg" },
-							{ "Loaded but failed to initialize: " .. tostring(native.error), "Normal" },
-						})
-					else
-						echo({
-							{ "time-tracking-nvim: ", "MoreMsg" },
-							{ "Plugin loaded successfully!", "Normal" },
-						})
-					end
+					echo({
+						{ "time-tracking-nvim: ", "MoreMsg" },
+						{ "Plugin loaded successfully!", "Normal" },
+					})
 				end
 			else
 				echo({
@@ -828,26 +845,24 @@ function M.setup(opts)
 					add_to_cpath(binary_path)
 
 					-- Try to load the native module now
-					local ok, native = pcall(require, "time_tracking_nvim")
-					if not ok then
+					local status, value = load_native()
+					if status == "load_failed" then
 						echo({
 							{ "time-tracking-nvim: ", "ErrorMsg" },
 							{ "Failed to load native module after update: ", "Normal" },
-							{ native, "ErrorMsg" },
+							{ value, "ErrorMsg" },
 							{ "\nPlease restart Neovim", "Normal" },
 						})
+					elseif status == "init_failed" then
+						echo({
+							{ "time-tracking-nvim: ", "ErrorMsg" },
+							{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
+						})
 					else
-						if type(native) == "table" and native.error then
-							echo({
-								{ "time-tracking-nvim: ", "ErrorMsg" },
-								{ "Loaded but failed to initialize: " .. tostring(native.error), "Normal" },
-							})
-						else
-							echo({
-								{ "time-tracking-nvim: ", "MoreMsg" },
-								{ "Plugin updated and loaded successfully!", "Normal" },
-							})
-						end
+						echo({
+							{ "time-tracking-nvim: ", "MoreMsg" },
+							{ "Plugin updated and loaded successfully!", "Normal" },
+						})
 					end
 				else
 					echo({
@@ -887,20 +902,20 @@ function M.setup(opts)
 	add_to_cpath(binary_path)
 
 	-- Load the native module
-	local ok, native = pcall(require, "time_tracking_nvim")
-	if not ok then
+	local status, value = load_native()
+	if status == "load_failed" then
 		echo({
 			{ "time-tracking-nvim: ", "ErrorMsg" },
-			{ "Failed to load native module: " .. native, "Normal" },
+			{ "Failed to load native module: " .. value, "Normal" },
 			{ "\nMake sure the plugin is properly installed and the dynamic library is available", "Normal" },
 		})
 		return
 	end
 
-	if type(native) == "table" and native.error then
+	if status == "init_failed" then
 		echo({
 			{ "time-tracking-nvim: ", "ErrorMsg" },
-			{ "Native module loaded but failed to initialize: " .. tostring(native.error), "Normal" },
+			{ "Native module loaded but failed to initialize: " .. tostring(value), "Normal" },
 			{ "\nNo commands were registered. Check your time-tracking-cli configuration.", "Normal" },
 		})
 		return
@@ -1010,6 +1025,7 @@ M._internal = {
 	parse_sha256sums = parse_sha256sums,
 	checksum_verdict = checksum_verdict,
 	install_binary = install_binary,
+	load_native = load_native,
 }
 
 return M
