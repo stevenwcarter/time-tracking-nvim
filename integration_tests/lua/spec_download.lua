@@ -698,4 +698,84 @@ H.describe("download_binary control flow", function()
   end)
 end)
 
+-- select_assets, the one phase of the descent above that is pure: a decoded
+-- release plus a target in, the two URLs to fetch and the asset's name out --
+-- or a refusal. It is reached through M._internal, where the flatten exported
+-- it for exactly this, rather than through the debug.getupvalue seam the cases
+-- above need.
+--
+-- Driving it directly is what makes the refusals assertable as return values.
+-- Two of the cases above reach the same two decisions ("reports when no asset
+-- matches the target", "refuses an untrusted download URL and fetches
+-- nothing") but can only observe them as a callback that fired and a curl that
+-- did not, which cannot tell those two refusals apart from each other.
+--
+-- The fixtures are the release_json above, decoded: exactly the shape the real
+-- caller passes, since download_binary hands on whatever vim.json.decode
+-- produced.
+local function release_for(o)
+  return vim.json.decode(release_json(o))
+end
+
+H.describe("select_assets", function()
+  H.it("returns the archive URL, the SHA256SUMS URL and the asset name", function()
+    local sums = RELEASE_BASE .. "SHA256SUMS"
+    local url, sums_url, name, err = internal.select_assets(release_for({ sums_url = sums }), LINUX)
+    H.eq(err, nil, "an ordinary release was refused")
+    H.eq(url, RELEASE_BASE .. asset_for(LINUX), "wrong archive URL")
+    H.eq(sums_url, sums, "wrong SHA256SUMS URL")
+    H.eq(name, asset_for(LINUX), "wrong asset name")
+  end)
+
+  H.it("picks the zip asset for a windows target", function()
+    local url, _, name, err = internal.select_assets(release_for({ target = WINDOWS }), WINDOWS)
+    H.eq(err, nil, "the windows release was refused")
+    H.eq(name, "time-tracking-nvim-" .. WINDOWS .. ".zip", "the tar.gz name was used for windows")
+    H.eq(url, RELEASE_BASE .. asset_for(WINDOWS), "wrong archive URL")
+  end)
+
+  H.it("reports a release with no SHA256SUMS as a nil URL, not as a refusal", function()
+    -- Whether an unchecksummed release may be installed is checksum_verdict's
+    -- decision, several phases later; nothing is refused here for lacking one.
+    local url, sums_url, name, err = internal.select_assets(release_for({}), LINUX)
+    H.eq(err, nil, "a release without checksums was refused here")
+    H.eq(url, RELEASE_BASE .. asset_for(LINUX), "the archive URL was not selected")
+    H.eq(sums_url, nil, "a SHA256SUMS URL appeared from nowhere")
+    H.eq(name, asset_for(LINUX), "wrong asset name")
+  end)
+
+  H.it("refuses when no asset matches the target", function()
+    local url, sums_url, name, err =
+      internal.select_assets(release_for({ asset_name = "time-tracking-nvim-sparc-sun-solaris.tar.gz" }), LINUX)
+    H.eq(url, nil, "an unrelated asset was selected")
+    H.eq(sums_url, nil)
+    H.eq(name, nil)
+    H.ok(contains(err, LINUX), "the target is not named in the refusal: " .. tostring(err))
+  end)
+
+  H.it("refuses an archive URL that fails the trust check", function()
+    -- The security boundary, decided here and without a network: an anchored
+    -- host check, so a host merely *containing* a trusted name is refused.
+    local evil = "https://github.com.evil.example/stevenwcarter/time-tracking-nvim/x.tar.gz"
+    local url, sums_url, name, err = internal.select_assets(release_for({ asset_url = evil }), LINUX)
+    H.eq(url, nil, "an untrusted URL was handed back for curl to fetch")
+    H.eq(sums_url, nil)
+    H.eq(name, nil)
+    H.ok(contains(err, evil), "the refused URL is not named: " .. tostring(err))
+  end)
+
+  H.it("hands on an untrusted SHA256SUMS URL, which is refused a phase later", function()
+    -- Pinned as it stands, and load-bearing: the SHA256SUMS trust check lives
+    -- one phase further on, after the archive has already been downloaded (see
+    -- "refuses an untrusted SHA256SUMS URL after the archive is already
+    -- down"). Moving it in here would change when the temp directory is
+    -- created and therefore what has to be cleaned up on that refusal.
+    local evil = "https://sha.evil.example/SHA256SUMS"
+    local url, sums_url, _, err = internal.select_assets(release_for({ sums_url = evil }), LINUX)
+    H.eq(err, nil, "the refusal moved into select_assets")
+    H.ok(url ~= nil, "the archive URL is still selected")
+    H.eq(sums_url, evil, "the URL is not handed on verbatim for that later check")
+  end)
+end)
+
 return H

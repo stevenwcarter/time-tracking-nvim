@@ -700,9 +700,9 @@ local function download_binary(target, binary_path, callback, expected_version, 
 		-- Verify BEFORE extracting: everything downstream — extract, copy into
 		-- lua/, and the pcall(require, …) that dlopens it — treats these bytes
 		-- as trusted native code.
-		local function verify_and_install(expected_digest, digest_err)
-			if digest_err then
-				return fail(temp_dir, callback, digest_err)
+		local function verify_and_install(expected_digest, sums_err)
+			if sums_err then
+				return fail(temp_dir, callback, sums_err)
 			end
 
 			local refusal = verify_archive(temp_file, asset_name, expected_digest, allow_unverified)
