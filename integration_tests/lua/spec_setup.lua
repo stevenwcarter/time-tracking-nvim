@@ -45,9 +45,13 @@ end
 local function api_calls(rec)
   local urls = {}
   for _, argv in ipairs(rec.curl) do
-    local url = argv[#argv]
-    if type(url) == "string" and url:sub(1, #API_PREFIX) == API_PREFIX then
-      table.insert(urls, url)
+    -- Every element, not just the trailing one. The URL is last only because
+    -- curl_cmd appends its `extra` last; a positional check would keep passing
+    -- while silently measuring nothing if anything were ever appended after it.
+    for _, word in ipairs(argv) do
+      if type(word) == "string" and word:sub(1, #API_PREFIX) == API_PREFIX then
+        table.insert(urls, word)
+      end
     end
   end
   return urls
@@ -64,8 +68,20 @@ end
 -- world.uname           override uv.os_uname(), for the unsupported-platform
 --                       guard only; a *different supported* platform would
 --                       desynchronise the paths captured just below
+-- world.native          what requiring the native module does:
+--                         nil           a healthy module (the default)
+--                         "unloadable"  require raises, which load_native
+--                                       classifies "load_failed"
+--                         a table       returned verbatim, so { error = ... }
+--                                       is load_native's "init_failed"
 --
--- Returns { curl = {argv, ...}, native_loads = n, echoes = n }.
+-- Returns { curl = {argv, ...}, native_loads = n, echoes = n, config = t },
+-- where config is the M.config setup() published, captured before teardown
+-- puts the previous value back.
+--
+-- Anything setup() throws is re-raised after teardown, so a case that reaches
+-- its assertions at all has already established that setup() returned
+-- normally rather than propagating.
 local function run_setup(world, opts)
   -- Captured before any stub is installed, so they are the paths setup() will
   -- compute for this machine.
@@ -140,11 +156,23 @@ local function run_setup(world, opts)
   -- dlopen'd and a load is observable as a call rather than as a side effect.
   package.loaded[NATIVE] = nil
   package.preload[NATIVE] = function()
+    if world.native == "unloadable" then
+      -- Raised before counting: require() produces no module at all, so this
+      -- is not a load. Stands in for a dlopen failure, which is what
+      -- load_native's pcall is there to catch.
+      error("stub: cannot open shared object")
+    end
     rec.native_loads = rec.native_loads + 1
-    return {}
+    return world.native or {}
   end
 
   local ok, err = pcall(tt.setup, opts)
+
+  -- Captured before the line below puts the old value back. setup() publishes
+  -- its merged config on the module and M.download() reads
+  -- allow_unverified_download back off it at call time, so this is live state
+  -- rather than bookkeeping.
+  rec.config = tt.config
 
   vim.system = saved.system
   vim.api.nvim_echo = saved.echo
@@ -184,6 +212,7 @@ H.describe("M.setup ladder", function()
     H.eq(#api_calls(rec), 0, "no download")
     H.eq(rec.native_loads, 0, "returns before the load")
     H.ok(rec.echoes > 0, "told the user the binary is missing")
+    H.eq(rec.config.auto_download, false, "the merge is published even on a branch that returns early")
   end)
 
   H.it("loads without downloading when the version file matches the plugin", function()
@@ -208,7 +237,9 @@ H.describe("M.setup ladder", function()
     -- No version file at all is the pre-0.1.x-upgrade shape, and setup()
     -- funnels it into the same update branch as a genuine mismatch.
     local rec = run_setup({ binary_exists = true, binary_version = nil }, {})
-    H.eq(#api_calls(rec), 1, "exactly one release-API fetch")
+    local urls = api_calls(rec)
+    H.eq(#urls, 1, "exactly one release-API fetch")
+    H.ok(ends_with(urls[1], WANTED_RELEASE), "asked for " .. WANTED_RELEASE .. ", got " .. tostring(urls[1]))
     H.eq(rec.native_loads, 0, "the load is deferred to the download callback")
   end)
 
@@ -275,6 +306,48 @@ H.describe("M.setup ladder", function()
     )
     H.eq(#api_calls(rec), 1, "downloads regardless of tar/unzip")
     H.eq(rec.native_loads, 0, "the load is deferred to the download callback")
+  end)
+
+  H.it("echoes and returns when the native module will not load", function()
+    -- The tail's load_failed branch. What is pinned is that setup *swallows*
+    -- the failure: it reports and returns rather than letting the error out.
+    -- run_setup re-raises anything setup() throws, so reaching the assertions
+    -- below is itself the "returned normally" half of this case.
+    local rec = run_setup(
+      { binary_exists = true, binary_version = internal.PLUGIN_VERSION, native = "unloadable" },
+      {}
+    )
+    H.eq(#api_calls(rec), 0, "no download")
+    H.eq(rec.native_loads, 0, "require produced no module")
+    H.ok(rec.echoes > 0, "reported the load failure")
+  end)
+
+  H.it("echoes and returns when the native module loads but fails to initialize", function()
+    -- The tail's init_failed branch. The native module signals this by
+    -- returning a table with an `error` key rather than by raising, so unlike
+    -- the case above the module really did load. Swallowed the same way.
+    local rec = run_setup(
+      { binary_exists = true, binary_version = internal.PLUGIN_VERSION, native = { error = "no cli" } },
+      {}
+    )
+    H.eq(#api_calls(rec), 0, "no download")
+    H.eq(rec.native_loads, 1, "the module loaded; it was its init that failed")
+    H.ok(rec.echoes > 0, "reported the init failure")
+  end)
+
+  H.it("publishes the merged config on the module", function()
+    -- Live state, not bookkeeping: M.download() reads
+    -- (M.config or {}).allow_unverified_download at call time, so a
+    -- decomposition that merges the config into a local and forgets to publish
+    -- it silently unplumbs that flag. Both halves of the merge are pinned:
+    -- the caller's override, and a default the caller never mentioned.
+    local rec = run_setup(
+      { binary_exists = true, binary_version = internal.PLUGIN_VERSION },
+      { allow_unverified_download = true }
+    )
+    H.ok(rec.config, "M.config was published")
+    H.eq(rec.config.allow_unverified_download, true, "the caller's override")
+    H.eq(rec.config.auto_download, true, "a default the caller did not mention")
   end)
 end)
 
