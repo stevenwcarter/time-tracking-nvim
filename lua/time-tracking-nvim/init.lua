@@ -1054,7 +1054,7 @@ function M.toggle()
 end
 
 -- Re-renders the preview immediately, via `:TimeTrackingUpdate`, skipping the
--- TextChanged debounce.
+-- TextChanged throttle.
 function M.update()
 	vim.cmd("TimeTrackingUpdate")
 end
