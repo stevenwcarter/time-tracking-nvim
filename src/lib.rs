@@ -28,6 +28,9 @@ pub use preview::{
     auto_open_preview, close_preview, create_or_update_preview, toggle_preview_fn,
     update_preview_debounced, update_preview_fn,
 };
+// Test seam, not interface: see `preview::write_preview_contents_with`.
+#[doc(hidden)]
+pub use preview::write_preview_contents_with;
 
 #[macro_export]
 macro_rules! log_info {

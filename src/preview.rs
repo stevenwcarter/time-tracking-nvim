@@ -25,10 +25,10 @@ thread_local! {
     ///
     /// Invariant this cache depends on: it tracks what was last *written*,
     /// not what the buffer currently *contains*, so it is only correct as
-    /// long as [`create_or_update_preview`] is the sole writer to the preview
-    /// buffer's contents. If another write path is ever added, this cache
-    /// goes stale silently and the dirty-check in `create_or_update_preview`
-    /// will skip writes the buffer actually needs.
+    /// long as [`write_preview_contents_with`] is the sole writer to the
+    /// preview buffer's contents. If another write path is ever added, this
+    /// cache goes stale silently and the dirty-check there will skip writes
+    /// the buffer actually needs.
     static LAST_OUTPUT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -297,10 +297,194 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
     Ok(())
 }
 
+/// Create the scratch buffer that backs the preview, and prime both caches.
+fn create_preview_buffer() -> Result<Buffer> {
+    let mut b = api::create_buf(false, true)?; // listed=false, scratch=true
+    b.set_name("[Time Tracking Preview]")?;
+
+    // Keep it unlisted and non-modifiable by default (DO NOT set 'readonly')
+    let bopts = OptionOptsBuilder::default().buf(b.clone()).build();
+    api::set_option_value("buflisted", false, &bopts)?;
+    api::set_option_value("modifiable", false, &bopts)?;
+    api::set_option_value("bufhidden", "wipe", &bopts)?;
+    api::set_option_value("swapfile", false, &bopts)?;
+    set_cached_preview_buf(Some(b.clone()));
+    set_last_output(None);
+    Ok(b)
+}
+
+/// The real line write behind [`write_preview_contents`].
+fn set_preview_lines(buf: &mut Buffer, lines: Vec<String>) -> Result<()> {
+    buf.set_lines(0..buf.line_count()?, false, lines)?;
+    Ok(())
+}
+
+/// Write `output` into the preview buffer, skipping the rewrite when nothing
+/// changed.
+///
+/// The rendered day summary is unchanged for most keystrokes, and rewriting
+/// yanks the preview's scroll position and repaints the whole split.
+///
+/// No `buf.is_valid()` check: the caller passes either a buffer just created by
+/// [`create_preview_buffer`] or one resolved by `find_preview`, whose cache
+/// already revalidates before returning it (see `cached_preview_buf`) — so it
+/// is always valid here, and checking again would only cost an FFI call while
+/// suggesting a trust boundary that isn't there.
+fn write_preview_contents(buf: &mut Buffer, output: &str) -> Result<()> {
+    write_preview_contents_with(buf, output, set_preview_lines)
+}
+
+/// [`write_preview_contents`] with the line write injected, so that a *failing*
+/// write can be provoked from a test.
+///
+/// It cannot be provoked any other way. `nvim_set_option_value` fires no
+/// `OptionSet` event, so no autocommand can interleave between making the
+/// buffer modifiable and writing it, and `nvim_buf_set_lines` into a buffer
+/// just made modifiable does not fail of its own accord. Without this
+/// parameter the restore-before-propagate ordering below — the whole point of
+/// the function — would be guarded by code review alone; with it,
+/// `test_a_failed_preview_write_restores_nomodifiable_and_leaves_the_cache_clean`
+/// in `integration_tests` pins both halves of it.
+///
+/// Not part of the plugin's interface: `#[doc(hidden)]`, and production code
+/// reaches it only through [`write_preview_contents`].
+#[doc(hidden)]
+pub fn write_preview_contents_with(
+    buf: &mut Buffer,
+    output: &str,
+    write_lines: fn(&mut Buffer, Vec<String>) -> Result<()>,
+) -> Result<()> {
+    if last_output_matches(output) {
+        return Ok(());
+    }
+
+    let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
+    api::set_option_value("modifiable", true, &bopts)?;
+    let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
+    let write = write_lines(buf, lines);
+    // Restore before propagating: an early `?` here would leave the preview
+    // permanently modifiable, so the user could type into it and lose the
+    // edits on the next render.
+    api::set_option_value("modifiable", false, &bopts)?;
+    write?;
+    set_last_output(Some(output.to_owned()));
+    Ok(())
+}
+
+/// Apply the preview's window-local options and width.
+///
+/// A vsplit copies the source window's local options, so an ordinary
+/// `set number relativenumber list signcolumn=yes` config eats 6-8 of the
+/// preview's ~26 columns. Style it as the scratch preview it is.
+///
+/// Returns nothing: every call here logs its own failure, and none are fatal.
+fn style_preview_window(win: &mut Window, source_width: u32) {
+    // Keep the split’s width fixed
+    let wopts = OptionOptsBuilder::default().win(win.clone()).build();
+    if let Err(e) = api::set_option_value("winfixwidth", true, &wopts) {
+        debug_log!("[ttnvim] could not pin preview width: {}\n", e);
+    }
+
+    // Cosmetic only — a failure costs the user some visual noise in the
+    // preview, never correctness, so one debug line for the group is enough.
+    for (name, value) in [
+        ("number", false.into()),
+        ("relativenumber", false.into()),
+        ("wrap", false.into()),
+        ("cursorline", false.into()),
+        ("spell", false.into()),
+        ("list", false.into()),
+    ] {
+        if let Err(e) = api::set_option_value::<nvim_oxi::Object>(name, value, &wopts) {
+            debug_log!("[ttnvim] could not style preview ({}): {}\n", name, e);
+        }
+    }
+    if let Err(e) = api::set_option_value("signcolumn", "no", &wopts) {
+        debug_log!("[ttnvim] could not style preview (signcolumn): {}\n", e);
+    }
+    if let Err(e) = api::set_option_value("foldcolumn", "0", &wopts) {
+        debug_log!("[ttnvim] could not style preview (foldcolumn): {}\n", e);
+    }
+
+    // ~1/3 of the screen, but never more than the window we split from can
+    // spare: `columns` is global, and applying it to a window that is
+    // itself only a third of the screen squeezes the user's edit window to
+    // a couple of columns.
+    if let Ok(total_cols) =
+        api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())
+    {
+        let one_third = u32::try_from(total_cols / PREVIEW_SCREEN_FRACTION).unwrap_or(u32::MAX);
+        let width = one_third
+            .min(source_width.saturating_sub(MIN_PREVIEW_COLUMNS))
+            .max(MIN_PREVIEW_COLUMNS);
+        if let Err(e) = win.set_width(width) {
+            debug_log!("[ttnvim] could not set preview width: {}\n", e);
+        }
+    }
+}
+
+/// Open a vertical split to the right and attach the preview buffer to it.
+///
+/// Returns `Ok(())` without splitting when the window is too narrow or a window
+/// operation is already in progress — a missing preview beats a broken layout.
+fn open_preview_split(buf: &Buffer) -> Result<()> {
+    // Capture the window we are about to split, before the split halves it.
+    let origin = api::get_current_win();
+    let source_width = origin.get_width().unwrap_or(u32::MAX);
+
+    if source_width < MIN_SPLIT_COLUMNS {
+        debug_log!(
+            "[ttnvim] skipping preview split: source window is {} columns\n",
+            source_width
+        );
+        return Ok(());
+    }
+
+    // Use a plain command for portability; it's fine here.
+    if let Err(e) = api::command("rightbelow vsplit") {
+        let msg = e.to_string();
+        if msg.contains("E242") || msg.contains("Can't split a window while closing another") {
+            // Window operation in progress; skip this update.
+            debug_log!("[ttnvim] skipping split during window close: {}\n", msg);
+            return Ok(());
+        }
+        log_error!("[time-tracking-nvim] failed to split: {}", msg);
+        return Ok(());
+    }
+
+    // Current window is the new split
+    let mut win: Window = api::get_current_win();
+
+    // Attach our preview buffer
+    if let Err(e) = win.set_buf(buf) {
+        log_error!("[time-tracking-nvim] failed to set preview buffer: {}", e);
+        if let Err(close_err) = win.close(false) {
+            debug_log!("[ttnvim] failed to close orphan split: {}\n", close_err);
+        }
+        return Ok(());
+    }
+
+    style_preview_window(&mut win, source_width);
+
+    // Restore focus by handle rather than `wincmd p`: the split has already
+    // repointed Vim's previous-window pointer, so `wincmd p` only lands
+    // correctly by accident — and it overwrites the user's own previous-window
+    // target on the way. This changes where the cursor ends up, so a failure
+    // is user-visible and warrants more than a debug line.
+    if let Err(e) = api::set_current_win(&origin) {
+        log_error!(
+            "[time-tracking-nvim] could not return focus after opening the preview: {}",
+            e
+        );
+    }
+
+    Ok(())
+}
+
 /// Create or update the preview window with formatted time tracking data
 pub fn create_or_update_preview(output: &str) -> Result<()> {
     // Bail if Neovim has no windows yet (during early startup churn)
-    if api::list_wins().len() == 0 {
+    if api::list_wins().next().is_none() {
         return Ok(());
     }
 
@@ -310,148 +494,17 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         None => (None, None),
     };
 
-    // Create a scratch buffer if missing
     let mut buf: Buffer = match preview {
         Some(b) => b,
-        None => {
-            let mut b = api::create_buf(false, true)?; // listed=false, scratch=true
-            b.set_name("[Time Tracking Preview]")?;
-
-            // Keep it unlisted and non-modifiable by default (DO NOT set 'readonly')
-            let bopts = OptionOptsBuilder::default().buf(b.clone()).build();
-            api::set_option_value("buflisted", false, &bopts)?;
-            api::set_option_value("modifiable", false, &bopts)?;
-            api::set_option_value("bufhidden", "wipe", &bopts)?;
-            api::set_option_value("swapfile", false, &bopts)?;
-            set_cached_preview_buf(Some(b.clone()));
-            set_last_output(None);
-            b
-        }
+        None => create_preview_buffer()?,
     };
 
-    // Update buffer contents, skipping the rewrite when nothing changed.
-    // The rendered day summary is unchanged for most keystrokes, and rewriting
-    // yanks the preview's scroll position and repaints the whole split.
-    //
-    // No `buf.is_valid()` check here: `buf` is either the buffer just created
-    // above, a live entry from `list_bufs()`, or `find_preview`'s cache,
-    // which already revalidates before returning it (see
-    // `cached_preview_buf`) — so it is always valid at this point, and
-    // checking again would only cost an FFI call while suggesting a trust
-    // boundary that isn't there.
-    if !last_output_matches(output) {
-        let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
-        api::set_option_value("modifiable", true, &bopts)?;
-        let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
-        let write = buf.set_lines(0..buf.line_count()?, false, lines);
-        // Restore before propagating: an early `?` here would leave the preview
-        // permanently modifiable, so the user could type into it and lose the
-        // edits on the next render.
-        api::set_option_value("modifiable", false, &bopts)?;
-        write?;
-        set_last_output(Some(output.to_owned()));
-    }
+    write_preview_contents(&mut buf, output)?;
 
-    // Is the preview buffer already shown? `find_preview` resolved that above;
-    // a scratch buffer created just now is by definition displayed nowhere.
-    let is_open = preview_win.is_some();
-
-    // If not, create a vertical split and attach the preview buffer to it
-    if !is_open {
-        // Capture the window we are about to split, before the split halves it.
-        let origin = api::get_current_win();
-        let source_width = origin.get_width().unwrap_or(u32::MAX);
-
-        if source_width < MIN_SPLIT_COLUMNS {
-            debug_log!(
-                "[ttnvim] skipping preview split: source window is {} columns\n",
-                source_width
-            );
-            return Ok(());
-        }
-
-        // Use a plain command for portability; it's fine here.
-        if let Err(e) = api::command("rightbelow vsplit") {
-            let msg = e.to_string();
-            if msg.contains("E242") || msg.contains("Can't split a window while closing another") {
-                // Window operation in progress; skip this update.
-                debug_log!("[ttnvim] skipping split during window close: {}\n", msg);
-                return Ok(());
-            }
-            log_error!("[time-tracking-nvim] failed to split: {}", msg);
-            return Ok(());
-        }
-
-        // Current window is the new split
-        let mut win: Window = api::get_current_win();
-
-        // Attach our preview buffer
-        if let Err(e) = win.set_buf(&buf) {
-            log_error!("[time-tracking-nvim] failed to set preview buffer: {}", e);
-            if let Err(close_err) = win.close(false) {
-                debug_log!("[ttnvim] failed to close orphan split: {}\n", close_err);
-            }
-            return Ok(());
-        }
-
-        // Keep the split’s width fixed
-        let wopts = OptionOptsBuilder::default().win(win.clone()).build();
-        if let Err(e) = api::set_option_value("winfixwidth", true, &wopts) {
-            debug_log!("[ttnvim] could not pin preview width: {}\n", e);
-        }
-
-        // A vsplit copies the source window's local options, so an ordinary
-        // `set number relativenumber list signcolumn=yes` config eats 6-8 of
-        // the preview's ~26 columns. Style it as the scratch preview it is.
-        //
-        // Cosmetic only — a failure costs the user some visual noise in the
-        // preview, never correctness, so one debug line for the group is enough.
-        for (name, value) in [
-            ("number", false.into()),
-            ("relativenumber", false.into()),
-            ("wrap", false.into()),
-            ("cursorline", false.into()),
-            ("spell", false.into()),
-            ("list", false.into()),
-        ] {
-            if let Err(e) = api::set_option_value::<nvim_oxi::Object>(name, value, &wopts) {
-                debug_log!("[ttnvim] could not style preview ({}): {}\n", name, e);
-            }
-        }
-        if let Err(e) = api::set_option_value("signcolumn", "no", &wopts) {
-            debug_log!("[ttnvim] could not style preview (signcolumn): {}\n", e);
-        }
-        if let Err(e) = api::set_option_value("foldcolumn", "0", &wopts) {
-            debug_log!("[ttnvim] could not style preview (foldcolumn): {}\n", e);
-        }
-
-        // ~1/3 of the screen, but never more than the window we split from can
-        // spare: `columns` is global, and applying it to a window that is
-        // itself only a third of the screen squeezes the user's edit window to
-        // a couple of columns.
-        if let Ok(total_cols) =
-            api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())
-        {
-            let one_third = u32::try_from(total_cols / PREVIEW_SCREEN_FRACTION).unwrap_or(u32::MAX);
-            let width = one_third
-                .min(source_width.saturating_sub(MIN_PREVIEW_COLUMNS))
-                .max(MIN_PREVIEW_COLUMNS);
-            if let Err(e) = win.set_width(width) {
-                debug_log!("[ttnvim] could not set preview width: {}\n", e);
-            }
-        }
-
-        // Restore focus by handle rather than `wincmd p`: the split has already
-        // repointed Vim's previous-window pointer, so `wincmd p` only lands
-        // correctly by accident — and it overwrites the user's own previous-window
-        // target on the way. This changes where the cursor ends up, so a failure
-        // is user-visible and warrants more than a debug line.
-        if let Err(e) = api::set_current_win(&origin) {
-            log_error!(
-                "[time-tracking-nvim] could not return focus after opening the preview: {}",
-                e
-            );
-        }
+    // `find_preview` resolved this above; a buffer created just now is by
+    // definition displayed nowhere.
+    if preview_win.is_none() {
+        open_preview_split(&buf)?;
     }
 
     Ok(())
@@ -528,7 +581,8 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     // No delay here: this runs on Neovim's single event-loop thread, so
     // sleeping cannot let a pending window operation complete — it is exactly
     // what prevents it. The split-during-close race is handled by the E242
-    // guard in create_or_update_preview and the empty-window-list bail.
+    // guard in `open_preview_split` and by `create_or_update_preview`'s
+    // empty-window-list bail.
     let is_tracking = is_time_tracking_file(config)?;
     if !is_tracking {
         log_info!("[TimeTracking] Auto-open: Not a tracking file");

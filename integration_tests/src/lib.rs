@@ -1372,3 +1372,75 @@ fn test_auto_open_gives_a_second_tabpage_its_own_preview_window() {
     api::command("only").unwrap();
     cleanup_preview_buffers();
 }
+
+/// A line write that always fails, for the B37 ordering test below.
+///
+/// Borrows a genuine API failure rather than fabricating an error value:
+/// buffer handle 9_999_999 does not exist, so any call on it errors.
+fn line_write_that_always_fails(
+    _buf: &mut nvim_oxi::api::Buffer,
+    _lines: Vec<String>,
+) -> nvim_oxi::Result<()> {
+    nvim_oxi::api::Buffer::from(9_999_999_i32).line_count()?;
+    Ok(())
+}
+
+// B37 regression guard. `write_preview_contents_with` makes the buffer
+// modifiable, writes, and only then restores `nomodifiable` and records the
+// output — so a failing write must still leave the preview nomodifiable and
+// must not tell the dirty-check that `output` was written.
+//
+// Nothing inside Neovim can force that write to fail: `nvim_set_option_value`
+// fires no `OptionSet` event, so no autocommand can interleave, and
+// `nvim_buf_set_lines` into a buffer just made modifiable succeeds. Hence the
+// injected writer — it is the only seam that can reach the failure branch.
+#[nvim_oxi::test]
+fn test_a_failed_preview_write_restores_nomodifiable_and_leaves_the_cache_clean() {
+    use nvim_oxi::api::opts::OptionOptsBuilder;
+
+    cleanup_preview_buffers();
+
+    create_or_update_preview("FIRST").unwrap();
+    let mut preview = preview_buffer();
+    assert_eq!(
+        preview_text(&preview),
+        "FIRST",
+        "precondition: the first render must land"
+    );
+
+    let result = time_tracking_nvim::write_preview_contents_with(
+        &mut preview,
+        "SECOND",
+        line_write_that_always_fails,
+    );
+    assert!(
+        result.is_err(),
+        "precondition: the injected write must actually fail"
+    );
+
+    // Half one: the failure must not leave the preview editable. It would stay
+    // that way for the rest of the session, so the user could type into the
+    // preview and silently lose the edits on the next render.
+    let bopts = OptionOptsBuilder::default().buf(preview.clone()).build();
+    assert!(
+        !api::get_option_value::<bool>("modifiable", &bopts).unwrap(),
+        "a failed write must restore nomodifiable before propagating"
+    );
+    assert_eq!(
+        preview_text(&preview),
+        "FIRST",
+        "a failed write must not have changed the buffer"
+    );
+
+    // Half two: the failure must not record "SECOND" as written. If it did,
+    // the dirty-check would skip the next real render of that same text and
+    // the preview would keep showing FIRST indefinitely.
+    create_or_update_preview("SECOND").unwrap();
+    assert_eq!(
+        preview_text(&preview),
+        "SECOND",
+        "a failed write must not poison the last-output cache"
+    );
+
+    cleanup_preview_buffers();
+}
