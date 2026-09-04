@@ -379,25 +379,42 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         // Attach our preview buffer
         if let Err(e) = win.set_buf(&buf) {
             log_error!("[time-tracking-nvim] failed to set preview buffer: {}", e);
-            let _ = win.close(false);
+            if let Err(close_err) = win.close(false) {
+                debug_log!("[ttnvim] failed to close orphan split: {}\n", close_err);
+            }
             return Ok(());
         }
 
         // Keep the split’s width fixed
         let wopts = OptionOptsBuilder::default().win(win.clone()).build();
-        let _ = api::set_option_value("winfixwidth", true, &wopts);
+        if let Err(e) = api::set_option_value("winfixwidth", true, &wopts) {
+            debug_log!("[ttnvim] could not pin preview width: {}\n", e);
+        }
 
         // A vsplit copies the source window's local options, so an ordinary
         // `set number relativenumber list signcolumn=yes` config eats 6-8 of
         // the preview's ~26 columns. Style it as the scratch preview it is.
-        let _ = api::set_option_value("number", false, &wopts);
-        let _ = api::set_option_value("relativenumber", false, &wopts);
-        let _ = api::set_option_value("wrap", false, &wopts);
-        let _ = api::set_option_value("signcolumn", "no", &wopts);
-        let _ = api::set_option_value("foldcolumn", "0", &wopts);
-        let _ = api::set_option_value("cursorline", false, &wopts);
-        let _ = api::set_option_value("spell", false, &wopts);
-        let _ = api::set_option_value("list", false, &wopts);
+        //
+        // Cosmetic only — a failure costs the user some visual noise in the
+        // preview, never correctness, so one debug line for the group is enough.
+        for (name, value) in [
+            ("number", false.into()),
+            ("relativenumber", false.into()),
+            ("wrap", false.into()),
+            ("cursorline", false.into()),
+            ("spell", false.into()),
+            ("list", false.into()),
+        ] {
+            if let Err(e) = api::set_option_value::<nvim_oxi::Object>(name, value, &wopts) {
+                debug_log!("[ttnvim] could not style preview ({}): {}\n", name, e);
+            }
+        }
+        if let Err(e) = api::set_option_value("signcolumn", "no", &wopts) {
+            debug_log!("[ttnvim] could not style preview (signcolumn): {}\n", e);
+        }
+        if let Err(e) = api::set_option_value("foldcolumn", "0", &wopts) {
+            debug_log!("[ttnvim] could not style preview (foldcolumn): {}\n", e);
+        }
 
         // ~1/3 of the screen, but never more than the window we split from can
         // spare: `columns` is global, and applying it to a window that is
@@ -408,7 +425,9 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         {
             let one_third = (total_cols / 3).max(0) as u32;
             let width = one_third.min(source_width.saturating_sub(20)).max(20);
-            let _ = win.set_width(width);
+            if let Err(e) = win.set_width(width) {
+                debug_log!("[ttnvim] could not set preview width: {}\n", e);
+            }
         }
 
         // Return to the previous window
