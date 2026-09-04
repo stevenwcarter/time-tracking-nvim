@@ -98,6 +98,19 @@ thread_local! {
     ///
     /// Re-armed on each keystroke, so a burst of typing costs one render at
     /// the end of the burst rather than one per character.
+    ///
+    /// **Every re-arm leaks ~200 bytes.** nvim-oxi's libuv binding allocates
+    /// the `uv_timer_t` with `alloc::alloc` and boxes the callback with
+    /// `Box::into_raw`, but `libuv::Handle` has no `Drop` impl, so dropping a
+    /// `TimerHandle` frees nothing. There is no local fix: `TimerHandle`
+    /// exposes `start`/`once` only as associated constructors that allocate a
+    /// fresh handle, with no `&mut self` way to re-arm an existing one. The
+    /// real fix is `impl Drop for Handle` upstream.
+    ///
+    /// What bounds the leak is the tracking-file guard at the top of
+    /// [`update_preview_debounced`]: the autocommand fires for *every* `*.md`
+    /// buffer, so without that guard editing a README would leak on every
+    /// keystroke too. Keep the guard.
     static PENDING_UPDATE: RefCell<Option<TimerHandle>> = const { RefCell::new(None) };
 }
 
@@ -112,6 +125,17 @@ thread_local! {
 /// directly: a user who types the command expects to see the result, not to
 /// wait out the debounce window.
 pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
+    // Arm nothing for a buffer that can never render a preview. The
+    // autocommand fires for every `*.md` buffer, not just tracking notes, and
+    // every armed timer is an allocation the libuv binding never frees (see
+    // `PENDING_UPDATE`). `update_preview_fn` makes this same check when the
+    // timer fires, so skipping the arm changes no behaviour — it only avoids
+    // the leak, the timer, and the `schedule` round-trip for a buffer whose
+    // render would have been a no-op.
+    if !is_time_tracking_file(config)? {
+        return Ok(());
+    }
+
     // Cancel the render armed by the previous keystroke, so the burst renders
     // once, at its end.
     PENDING_UPDATE.with(|cell| {

@@ -1189,3 +1189,44 @@ fn test_debounced_update_eventually_renders() {
         preview_text(&preview)
     );
 }
+
+#[nvim_oxi::test]
+fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    // Open the preview from a real tracking file, so a stray render would be
+    // plainly visible.
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut tracked = api::create_buf(false, false).unwrap();
+    tracked.set_name(&md).unwrap();
+    api::set_current_buf(&tracked).unwrap();
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    // Switch to a markdown buffer outside the data directory. The
+    // `TextChanged,TextChangedI *.md` autocommand fires for this buffer too,
+    // but it can never produce a preview.
+    let other_dir = TempDir::new().expect("Failed to create second temp directory");
+    let readme = create_test_file(other_dir.path(), "README.md", "# Readme");
+    let mut untracked = api::create_buf(false, false).unwrap();
+    untracked.set_name(&readme).unwrap();
+    api::set_current_buf(&untracked).unwrap();
+
+    time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+
+    // Turn the event loop well past the debounce window.
+    api::exec2(
+        "lua vim.wait(600, function() return false end)",
+        &Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        preview_text(&preview),
+        "PLACEHOLDER",
+        "a markdown buffer outside the data directory must never render a preview"
+    );
+}
