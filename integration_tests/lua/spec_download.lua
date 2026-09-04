@@ -71,6 +71,26 @@ end
 
 local download_binary = upvalue(tt.download, "download_binary")
 
+-- The seam above is coupled to production *structure* rather than behaviour,
+-- and this is the one place that shows: the flatten ahead is exactly the change
+-- that might rename download_binary or stop M.download closing over it. Left
+-- alone, that turns every case below into an identical "attempt to call a nil
+-- value" -- 27 mysteries instead of one diagnosis.
+--
+-- Reported as a single failing case rather than as a bare assert at load time,
+-- which was tried and is worse: an error out of require() aborts the runner's
+-- spec loop before H.run() is ever reached, so nothing is reported at all and
+-- headless Neovim hangs on the hit-enter prompt with the remaining specs
+-- unrun. This way the suite still exits non-zero, but it says why.
+if not download_binary then
+  H.describe("download_binary control flow", function()
+    H.it("is still reachable through M.download's upvalues", function()
+      error("M.download no longer closes over download_binary -- update this seam")
+    end)
+  end)
+  return H
+end
+
 local function asset_for(target)
   local ext = target:match("windows") and ".zip" or ".tar.gz"
   return "time-tracking-nvim-" .. target .. ext
@@ -495,6 +515,32 @@ H.describe("download_binary control flow", function()
       H.eq(spawned(run), "curl,curl,curl", "extraction was reached without a digest")
       H.ok(contains(failed(run), run.asset_name), "the asset is not named")
       H.eq(#run.hashes, 0, "hashed the archive despite having no digest to compare")
+      cleaned_up(run)
+    end)
+  end)
+
+  H.it("refuses a SHA256SUMS with no entry for the asset even when unverified downloads are allowed", function()
+    -- The cross-product cell the case above cannot reach. With the flag off, a
+    -- refusal there is indistinguishable from a refusal for having no digest at
+    -- all, so nothing pins WHICH guard did the refusing.
+    --
+    -- Today the missing-entry guard fires before checksum_verdict is ever
+    -- consulted, so allow_unverified never reaches this decision: a published
+    -- SHA256SUMS that does not list this asset is a refusal, flag or no flag.
+    -- If a flatten drops that guard and falls through to
+    -- verify_then_extract(nil) instead, checksum_verdict sees no expected
+    -- digest, the flag waives it, and an allow_unverified user silently
+    -- installs an archive nobody checked -- with every other case in this file
+    -- still green. This is the case that goes red instead.
+    with_run({ allow_unverified = true }, function(run)
+      to_archive(run, release_json({ sums_url = RELEASE_BASE .. "SHA256SUMS" }))
+      run:drive(3, { code = 0, stdout = "", stderr = "" }, {
+        [run.sums_file] = DIGEST .. "  some-other-asset.tar.gz\n",
+      })
+      H.eq(spawned(run), "curl,curl,curl", "an unlisted archive reached extraction")
+      H.eq(#run.hashes, 0, "hashed the archive despite having no digest to compare")
+      H.ok(contains(failed(run), run.asset_name), "the asset is not named")
+      H.eq(vim.fn.filereadable(run.binary_path), 0, "installed an unverified archive")
       cleaned_up(run)
     end)
   end)
