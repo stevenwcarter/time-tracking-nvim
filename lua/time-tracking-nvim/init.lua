@@ -209,6 +209,30 @@ local function curl_cmd(extra)
 	return cmd
 end
 
+-- Constrain where a release asset may be fetched from.
+--
+-- asset.browser_download_url is taken verbatim out of the API response and
+-- handed to curl, so without this the only containment is that asset.name
+-- string-matched — a tampered response pointing at any host would be fetched
+-- and dlopen'd. Anchored patterns, so a host merely *containing* a trusted
+-- name (github.com.evil.example) does not pass.
+local function is_trusted_download_url(url)
+	if type(url) ~= "string" then
+		return false
+	end
+
+	local host = url:match("^https://([%w%.%-]+)/")
+	if not host then
+		return false
+	end
+
+	if host == "github.com" then
+		return url:match("^https://github%.com/stevenwcarter/time%-tracking%-nvim/") ~= nil
+	end
+
+	return host:match("%.githubusercontent%.com$") ~= nil
+end
+
 -- Download and extract binary from GitHub releases
 local function download_binary(target, binary_path, callback, expected_version)
 	-- Ask for the release we actually want. Falling back to /latest only when
@@ -274,6 +298,11 @@ local function download_binary(target, binary_path, callback, expected_version)
 				return
 			end
 
+			if not is_trusted_download_url(download_url) then
+				callback(false, "Refusing untrusted download URL: " .. tostring(download_url))
+				return
+			end
+
 			-- Create target directory (safe to call in scheduled context)
 			local target_dir = vim.fs.dirname(binary_path)
 			vim.fn.mkdir(target_dir, "p")
@@ -283,7 +312,7 @@ local function download_binary(target, binary_path, callback, expected_version)
 			vim.fn.mkdir(temp_dir, "p")
 			local temp_file = vim.fs.joinpath(temp_dir, asset_name)
 
-			local download_cmd = curl_cmd({ "-L", "-o", temp_file, download_url })
+			local download_cmd = curl_cmd({ "-L", "-o", temp_file, "--", download_url })
 			vim.system(download_cmd, {}, function(download_result)
 				vim.schedule(function()
 					if download_result.code ~= 0 then
@@ -792,6 +821,7 @@ M._internal = {
 	is_version_newer = is_version_newer,
 	get_platform_info = get_platform_info,
 	normalize_os_name = normalize_os_name,
+	is_trusted_download_url = is_trusted_download_url,
 }
 
 return M
