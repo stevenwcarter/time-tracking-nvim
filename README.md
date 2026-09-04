@@ -128,21 +128,36 @@ This plugin integrates with [time-tracking-cli](https://github.com/stevenwcarter
 
 ## Troubleshooting
 
-### Plugin Not Loading
+Start here:
 
-If you see an error about loading the native module:
+```vim
+:checkhealth time-tracking-nvim
+```
 
-1. Ensure you're using a supported platform (Linux, macOS, Windows x86_64)
-2. Check that the plugin was installed correctly by your plugin manager
-3. Try restarting Neovim
+It reports the detected platform, whether the native library is present and
+loadable, whether the plugin and binary versions agree, whether
+`package.cpath` is set up, whether the commands registered, and whether
+`curl`/`tar`/`unzip` are available for auto-download.
+
+For startup problems that happen before the plugin loads, capture the debug
+log:
+
+```bash
+TIME_TRACKING_DEBUG=1 nvim 2>/tmp/ttnvim.log
+```
 
 ### Preview Not Showing
 
-If the preview window doesn't appear:
+Run `:TimeTrackingToggle` — it now reports why when the current buffer is
+not a tracking file, naming both the buffer and the configured data
+directory. The preview only opens for `.md` files inside your
+time-tracking-cli `data_directory`.
 
-1. Make sure you're editing a `.md` file in your time tracking directory
-2. Check that your time-tracking-cli configuration is set up correctly
-3. Try manually running `:TimeTrackingToggle`
+### Version Information
+
+```vim
+:lua require('time-tracking-nvim').version_info()
+```
 
 ### Performance Issues
 

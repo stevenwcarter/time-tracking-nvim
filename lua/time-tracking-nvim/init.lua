@@ -974,6 +974,7 @@ end
 -- Test seam. Not part of the public API; contents may change without notice.
 -- Only pure, side-effect-free helpers belong here.
 M._internal = {
+	PLUGIN_VERSION = PLUGIN_VERSION,
 	is_version_newer = is_version_newer,
 	get_platform_info = get_platform_info,
 	normalize_os_name = normalize_os_name,
