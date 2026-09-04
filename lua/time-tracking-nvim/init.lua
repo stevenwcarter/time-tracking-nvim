@@ -29,9 +29,19 @@ local function add_to_cpath(binary_path)
 	end
 end
 
+-- Normalize libuv's sysname to the keys used in platform_mappings.
+-- uv.os_uname() mimics uname, so Windows reports "Windows_NT" (and MSYS/MinGW
+-- shells report "MINGW64_NT-…"/"MSYS_NT-…"), none of which is "windows".
+local function normalize_os_name(os_name)
+	if os_name:match("^windows") or os_name:match("^mingw") or os_name:match("^msys") then
+		return "windows"
+	end
+	return os_name
+end
+
 -- Get platform-specific information
 local function get_platform_info()
-	local os_name = uv.os_uname().sysname:lower()
+	local os_name = normalize_os_name(uv.os_uname().sysname:lower())
 	local arch = uv.os_uname().machine:lower()
 
 	local platform_mappings = {
@@ -704,6 +714,7 @@ end
 M._internal = {
 	is_version_newer = is_version_newer,
 	get_platform_info = get_platform_info,
+	normalize_os_name = normalize_os_name,
 }
 
 return M
