@@ -92,7 +92,6 @@ require("time-tracking-nvim").setup({
 The plugin provides several commands:
 
 - `:TimeTrackingToggle` - Toggle the preview window on/off
-- `:TimeTrackingPreview` - Show preview window (alias for toggle)
 - `:TimeTrackingUpdate` - Manually update the preview content
 - `:TimeTrackingClose` - Close the preview window
 
