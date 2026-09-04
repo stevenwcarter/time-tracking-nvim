@@ -246,8 +246,13 @@ fn register_commands(config: &'static Config) -> Result<()> {
             auto_open,
         ),
         (
+            // Marked "(internal)" like `TimeTrackingMaybeCloseIfInvisible`:
+            // this command is wired to no autocommand (bughunt B57) and its
+            // description was otherwise indistinguishable from
+            // `TimeTrackingClose`'s in the `:TimeTracking<Tab>` completion
+            // list. Renaming or removing it is B57's job, not this one's.
             "TimeTrackingAutoClose",
-            "Close the time-tracking preview",
+            "(internal) Close the time-tracking preview",
             auto_close,
         ),
         (
