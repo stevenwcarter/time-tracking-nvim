@@ -405,7 +405,266 @@ local function install_binary(src, dest)
 	return true
 end
 
--- Download and extract binary from GitHub releases
+-- The download is a chain of asynchronous phases -- fetch the release, pick its
+-- assets, fetch the archive, resolve the published digest, verify, extract and
+-- install, record the version -- and each one gets its own function below so
+-- that `download_binary` at the end of the chain reads as the order they run
+-- in, rather than as the nesting of the callbacks that sequence them.
+--
+-- Every phase that can fail once the scratch directory exists reports through
+-- `fail`, so cleanup is one line at each site instead of a repeated triple.
+
+-- Abandon a download in progress: remove the scratch directory and report the
+-- failure. `callback` is download_binary's own (ok, message) callback, or the
+-- one a phase was handed.
+local function fail(temp_dir, callback, msg)
+	vim.fn.delete(temp_dir, "rf")
+	callback(false, msg)
+end
+
+-- Interpret the release-metadata response: the decoded release table, or nil
+-- and a reason to give up. Pure.
+local function decode_release(result)
+	local ok, release_info = pcall(vim.json.decode, result.stdout)
+
+	-- What the guards below quote back when they have nothing better to report.
+	local body = tostring(result.stdout):sub(1, 200)
+
+	-- curl's fail flag (`--fail-with-body`, or the old-curl fallback `-f` — see
+	-- `curl_fail_flag`) makes curl exit non-zero on an HTTP error, but
+	-- `--fail-with-body` still writes the response body to stdout. So a 403/404
+	-- both fails this exit-code check *and* decodes to a table — treat that case
+	-- as "keep going below", where the guards produce a far better message
+	-- ("GitHub API error: API rate limit exceeded…") than the bare exit code
+	-- would. Only bail out here when there is truly nothing to decode: a
+	-- network/TLS failure, or the `-f` fallback, which discards the body along
+	-- with the exit code.
+	if result.code ~= 0 and not (ok and type(release_info) == "table") then
+		local reason = result.stderr
+		if not reason or reason == "" then
+			reason = body
+		end
+		if not reason or reason == "" then
+			reason = "curl exited with code " .. tostring(result.code)
+		end
+		return nil, "Failed to fetch release info: " .. reason
+	end
+
+	if not ok then
+		return nil, "Failed to parse release info"
+	end
+
+	-- A rate-limited or errored API response decodes to valid JSON with no
+	-- `assets` field, which used to fall through to "No binary found for
+	-- target: …" — telling the user their platform is unsupported when they
+	-- were merely rate-limited (60 req/hr per IP, routine on NAT).
+	if type(release_info) ~= "table" then
+		return nil, "Unexpected GitHub API response: " .. body
+	end
+	if release_info.message then
+		return nil, "GitHub API error: " .. tostring(release_info.message)
+	end
+	if type(release_info.assets) ~= "table" then
+		return nil, "GitHub API response had no assets (rate limited or malformed): " .. body
+	end
+
+	return release_info
+end
+
+-- Pick the assets to fetch for `target` out of a release: the platform archive
+-- and, when the release published one, its SHA256SUMS.
+--
+-- Pure, so the trust check on the archive URL — the only thing standing between
+-- a tampered API response and a dlopen of whatever it names — is decided
+-- without a network. Expects a release already validated by decode_release.
+--
+-- Returns download_url, sums_url, asset_name, or three nils and a refusal.
+local function select_assets(release_info, target)
+	local asset_name = string.format("time-tracking-nvim-%s.tar.gz", target)
+	if target:match("windows") then
+		asset_name = string.format("time-tracking-nvim-%s.zip", target)
+	end
+
+	local download_url, sums_url
+	for _, asset in ipairs(release_info.assets) do
+		if asset.name == asset_name then
+			download_url = asset.browser_download_url
+		elseif asset.name == "SHA256SUMS" then
+			sums_url = asset.browser_download_url
+		end
+	end
+
+	if not download_url then
+		return nil, nil, nil, "No binary found for target: " .. target
+	end
+	if not is_trusted_download_url(download_url) then
+		return nil, nil, nil, "Refusing untrusted download URL: " .. tostring(download_url)
+	end
+
+	return download_url, sums_url, asset_name
+end
+
+-- Fetch a release's metadata from the GitHub API.
+-- cb(release_info) on success, cb(nil, reason) on failure.
+local function fetch_release(release_url, cb)
+	-- -S (in addition to -s) so a hard failure below still has a real curl
+	-- error on stderr instead of an empty string; -s alone suppresses it.
+	local cmd = curl_cmd({ "-L", "-s", "-S", release_url })
+
+	vim.system(cmd, {}, function(result)
+		vim.schedule(function()
+			local release_info, err = decode_release(result)
+			cb(release_info, err)
+		end)
+	end)
+end
+
+-- Download `url` to `path`. cb(nil) on success, cb(stderr) on failure.
+--
+-- curl can fail with nothing on stderr, so that failure string may be empty;
+-- Lua's only false values are nil and false, so `if err then` at the call sites
+-- still reads an empty stderr as the failure it is.
+local function fetch_file(url, path, cb)
+	local cmd = curl_cmd({ "-L", "-o", path, "--", url })
+
+	vim.system(cmd, {}, function(result)
+		vim.schedule(function()
+			if result.code ~= 0 then
+				cb(result.stderr or "")
+			else
+				cb(nil)
+			end
+		end)
+	end)
+end
+
+-- Fetch the release's SHA256SUMS into `temp_dir` and pick out the digest
+-- published for `asset_name`. cb(digest) on success, cb(nil, reason) on failure.
+local function fetch_sums(sums_url, temp_dir, asset_name, cb)
+	local sums_file = vim.fs.joinpath(temp_dir, "SHA256SUMS")
+
+	fetch_file(sums_url, sums_file, function(err)
+		-- curl claiming success with no file on disk is refused exactly as an
+		-- outright failure is: there is nothing to verify against either way.
+		if err or vim.fn.filereadable(sums_file) ~= 1 then
+			return cb(nil, "Could not download SHA256SUMS: " .. (err or ""))
+		end
+
+		local sums = parse_sha256sums(table.concat(vim.fn.readfile(sums_file), "\n"))
+		local digest = sums[asset_name]
+		if not digest then
+			-- Decided here, before checksum_verdict is ever consulted, and so
+			-- outside allow_unverified's reach: that opt-in waives a release
+			-- that published no checksums at all, never an asset missing from
+			-- the ones it did publish.
+			return cb(nil, "SHA256SUMS has no entry for " .. asset_name)
+		end
+
+		cb(digest)
+	end)
+end
+
+-- Decide whether the downloaded archive may be installed, hashing it only when
+-- the release published a digest to compare against. Returns nil to allow the
+-- install, or the reason for refusing it.
+local function verify_archive(temp_file, asset_name, expected_digest, allow_unverified)
+	local actual
+	if expected_digest then
+		local digest_err
+		actual, digest_err = file_sha256(temp_file)
+		if not actual then
+			return "Could not compute checksum: " .. tostring(digest_err)
+		end
+	end
+
+	local refusal = checksum_verdict(expected_digest, actual, allow_unverified)
+	if refusal then
+		return asset_name .. ": " .. refusal
+	end
+
+	return nil
+end
+
+-- Unpack the verified archive and move the library into place. cb(true) on
+-- success, cb(false, reason) on failure; the scratch directory is gone by the
+-- time cb runs either way, so callers must not clean up after it.
+--
+-- The archive is unpacked exactly as published: no path-containment or symlink
+-- check, and no proof that tar or unzip exist at all (bughunt B56 and B28).
+-- Both are preserved here as they stand.
+local function extract_and_install(temp_file, temp_dir, binary_path, asset_name, cb)
+	local extract_cmd
+	if asset_name:match("%.zip$") then
+		extract_cmd = { "unzip", "-q", "-o", temp_file, "-d", temp_dir }
+	else
+		extract_cmd = { "tar", "-xzf", temp_file, "-C", temp_dir }
+	end
+
+	vim.system(extract_cmd, {}, function(extract_result)
+		vim.schedule(function()
+			if extract_result.code ~= 0 then
+				return fail(temp_dir, cb, "Failed to extract binary: " .. (extract_result.stderr or ""))
+			end
+
+			local extracted_binary = vim.fs.joinpath(temp_dir, "target", "release", vim.fs.basename(binary_path))
+			if vim.fn.filereadable(extracted_binary) ~= 1 then
+				return fail(temp_dir, cb, "Extracted binary not found at: " .. extracted_binary)
+			end
+
+			local installed, install_err = install_binary(extracted_binary, binary_path)
+			-- Unconditional, and before the result is checked: the scratch
+			-- directory is finished with whether or not the install worked.
+			vim.fn.delete(temp_dir, "rf")
+
+			if not installed then
+				return cb(false, "Failed to install binary to target location: " .. tostring(install_err))
+			end
+			cb(true)
+		end)
+	end)
+end
+
+-- Record the tag the release actually resolved to, not the one we asked for:
+-- with a pinned plugin tag these can differ, and recording the request made
+-- every later version comparison a no-op.
+--
+-- Takes no path, because write_binary_version accepts none: it recomputes the
+-- destination from plugin_root() rather than from the binary_path this download
+-- installed to. In production the two agree.
+local function record_version(release_info, expected_version)
+	local resolved_tag = release_info.tag_name
+	local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
+
+	if expected_version and version_to_store ~= expected_version then
+		echo({
+			{ "time-tracking-nvim: ", "WarningMsg" },
+			{
+				string.format(
+					"requested v%s but the release resolved to %s; recording %s",
+					expected_version,
+					tostring(resolved_tag),
+					version_to_store
+				),
+				"Normal",
+			},
+		})
+	end
+
+	if not write_binary_version(version_to_store) then
+		-- Not a fatal error, just warn
+		echo({
+			{ "time-tracking-nvim: ", "WarningMsg" },
+			{ "Warning: Could not save version info", "Normal" },
+		})
+	end
+end
+
+-- Download the native library for `target` from GitHub releases and install it
+-- at `binary_path`.
+--
+-- `expected_version` pins which release to ask for, and `opts.allow_unverified`
+-- waives a release that published no checksums. `callback(ok, message)` fires
+-- exactly once, from whichever phase decides the outcome.
 local function download_binary(target, binary_path, callback, expected_version, opts)
 	-- Ask for the release we actually want. Falling back to /latest only when
 	-- no version was requested: previously this always fetched /latest and then
@@ -414,232 +673,74 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	local release_url = expected_version and (API_BASE .. "/tags/v" .. expected_version)
 		or (API_BASE .. "/latest")
 
-	-- -S (in addition to -s) so a hard failure below still has a real curl
-	-- error on stderr instead of an empty string; -s alone suppresses it.
-	local cmd = curl_cmd({ "-L", "-s", "-S", release_url })
+	fetch_release(release_url, function(release_info, release_err)
+		if release_err then
+			return callback(false, release_err)
+		end
 
-	vim.system(cmd, {}, function(result)
-		vim.schedule(function()
-			local ok, release_info = pcall(vim.json.decode, result.stdout)
+		local download_url, sums_url, asset_name, asset_err = select_assets(release_info, target)
+		if asset_err then
+			return callback(false, asset_err)
+		end
 
-			-- curl's fail flag (`--fail-with-body`, or the old-curl fallback
-			-- `-f` — see `curl_fail_flag`) makes curl exit non-zero on an HTTP
-			-- error, but `--fail-with-body` still writes the response body to
-			-- stdout. So a 403/404 both fails this exit-code check *and*
-			-- decodes to a table — treat that case as "keep going below",
-			-- where the guards produce a far better message ("GitHub API
-			-- error: API rate limit exceeded…") than the bare exit code would.
-			-- Only bail out here when there is truly nothing to decode: a
-			-- network/TLS failure, or the `-f` fallback, which discards the
-			-- body along with the exit code.
-			if result.code ~= 0 and not (ok and type(release_info) == "table") then
-				local reason = result.stderr
-				if not reason or reason == "" then
-					reason = tostring(result.stdout):sub(1, 200)
+		-- Nothing is written to disk on behalf of a release we have refused, so
+		-- both directories are created only once the archive URL is trusted.
+		-- Safe to do here: fetch_release scheduled this continuation onto the
+		-- main loop, where vim.fn is allowed.
+		vim.fn.mkdir(vim.fs.dirname(binary_path), "p")
+		local temp_dir = vim.fn.tempname() .. "_time_tracking"
+		vim.fn.mkdir(temp_dir, "p")
+		local temp_file = vim.fs.joinpath(temp_dir, asset_name)
+		local allow_unverified = opts and opts.allow_unverified
+
+		-- Both routes to a digest converge here: fetch_sums resolved this
+		-- asset's line in a published SHA256SUMS, or the release published none
+		-- and there is nothing to compare against.
+		--
+		-- Verify BEFORE extracting: everything downstream — extract, copy into
+		-- lua/, and the pcall(require, …) that dlopens it — treats these bytes
+		-- as trusted native code.
+		local function verify_and_install(expected_digest, digest_err)
+			if digest_err then
+				return fail(temp_dir, callback, digest_err)
+			end
+
+			local refusal = verify_archive(temp_file, asset_name, expected_digest, allow_unverified)
+			if refusal then
+				return fail(temp_dir, callback, refusal)
+			end
+
+			extract_and_install(temp_file, temp_dir, binary_path, asset_name, function(ok, install_err)
+				if not ok then
+					-- Reported straight through rather than through fail():
+					-- extract_and_install has already cleaned up.
+					return callback(false, install_err)
 				end
-				if not reason or reason == "" then
-					reason = "curl exited with code " .. tostring(result.code)
-				end
-				callback(false, "Failed to fetch release info: " .. reason)
-				return
-			end
 
-			if not ok then
-				callback(false, "Failed to parse release info")
-				return
-			end
-
-			-- A rate-limited or errored API response decodes to valid JSON with
-			-- no `assets` field, which used to fall through to "No binary found
-			-- for target: …" — telling the user their platform is unsupported
-			-- when they were merely rate-limited (60 req/hr per IP, routine on NAT).
-			if type(release_info) ~= "table" then
-				callback(false, "Unexpected GitHub API response: " .. tostring(result.stdout):sub(1, 200))
-				return
-			end
-			if release_info.message then
-				callback(false, "GitHub API error: " .. tostring(release_info.message))
-				return
-			end
-			if type(release_info.assets) ~= "table" then
-				callback(
-					false,
-					"GitHub API response had no assets (rate limited or malformed): "
-						.. tostring(result.stdout):sub(1, 200)
-				)
-				return
-			end
-
-			-- Find the appropriate asset
-			local asset_name = string.format("time-tracking-nvim-%s.tar.gz", target)
-			if target:match("windows") then
-				asset_name = string.format("time-tracking-nvim-%s.zip", target)
-			end
-
-			local download_url = nil
-			local sums_url = nil
-			for _, asset in ipairs(release_info.assets) do
-				if asset.name == asset_name then
-					download_url = asset.browser_download_url
-				elseif asset.name == "SHA256SUMS" then
-					sums_url = asset.browser_download_url
-				end
-			end
-
-			if not download_url then
-				callback(false, "No binary found for target: " .. target)
-				return
-			end
-
-			if not is_trusted_download_url(download_url) then
-				callback(false, "Refusing untrusted download URL: " .. tostring(download_url))
-				return
-			end
-
-			-- Create target directory (safe to call in scheduled context)
-			local target_dir = vim.fs.dirname(binary_path)
-			vim.fn.mkdir(target_dir, "p")
-
-			-- Create temp directory for download
-			local temp_dir = vim.fn.tempname() .. "_time_tracking"
-			vim.fn.mkdir(temp_dir, "p")
-			local temp_file = vim.fs.joinpath(temp_dir, asset_name)
-
-			local download_cmd = curl_cmd({ "-L", "-o", temp_file, "--", download_url })
-			vim.system(download_cmd, {}, function(download_result)
-				vim.schedule(function()
-					if download_result.code ~= 0 then
-						-- Clean up on error
-						vim.fn.delete(temp_dir, "rf")
-						callback(false, "Failed to download binary: " .. (download_result.stderr or ""))
-						return
-					end
-
-					-- Verify BEFORE extracting: everything downstream — extract, copy
-					-- into lua/, and the pcall(require, …) that dlopens it — treats
-					-- these bytes as trusted native code.
-					local allow_unverified = opts and opts.allow_unverified
-
-					local function verify_then_extract(expected_digest)
-						local actual, digest_err
-						if expected_digest then
-							actual, digest_err = file_sha256(temp_file)
-							if not actual then
-								vim.fn.delete(temp_dir, "rf")
-								callback(false, "Could not compute checksum: " .. tostring(digest_err))
-								return
-							end
-						end
-
-						local refusal = checksum_verdict(expected_digest, actual, allow_unverified)
-						if refusal then
-							vim.fn.delete(temp_dir, "rf")
-							callback(false, asset_name .. ": " .. refusal)
-							return
-						end
-
-						-- Extract the archive
-						local extract_cmd
-						if asset_name:match("%.zip$") then
-							extract_cmd = { "unzip", "-q", "-o", temp_file, "-d", temp_dir }
-						else
-							extract_cmd = { "tar", "-xzf", temp_file, "-C", temp_dir }
-						end
-
-						vim.system(extract_cmd, {}, function(extract_result)
-							vim.schedule(function()
-								if extract_result.code ~= 0 then
-									-- Clean up on error
-									vim.fn.delete(temp_dir, "rf")
-									callback(false, "Failed to extract binary: " .. (extract_result.stderr or ""))
-									return
-								end
-
-								-- Move the binary to the correct location
-								local extracted_binary =
-									vim.fs.joinpath(temp_dir, "target", "release", vim.fs.basename(binary_path))
-
-								if vim.fn.filereadable(extracted_binary) ~= 1 then
-									-- Clean up on error
-									vim.fn.delete(temp_dir, "rf")
-									callback(false, "Extracted binary not found at: " .. extracted_binary)
-									return
-								end
-
-								local installed, install_err = install_binary(extracted_binary, binary_path)
-								-- Clean up temp files
-								vim.fn.delete(temp_dir, "rf")
-
-								if not installed then
-									callback(false, "Failed to install binary to target location: " .. tostring(install_err))
-									return
-								end
-
-								-- Record the tag we actually downloaded, not the one we asked
-								-- for: with a pinned plugin tag these can differ, and recording
-								-- the request made every later version comparison a no-op.
-								local resolved_tag = release_info.tag_name
-								local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
-
-								if expected_version and version_to_store ~= expected_version then
-									echo({
-										{ "time-tracking-nvim: ", "WarningMsg" },
-										{
-											string.format(
-												"requested v%s but the release resolved to %s; recording %s",
-												expected_version,
-												tostring(resolved_tag),
-												version_to_store
-											),
-											"Normal",
-										},
-									})
-								end
-
-								if not write_binary_version(version_to_store) then
-									-- Not a fatal error, just warn
-									echo({
-										{ "time-tracking-nvim: ", "WarningMsg" },
-										{ "Warning: Could not save version info", "Normal" },
-									})
-								end
-
-								callback(true, "Binary downloaded successfully")
-							end)
-						end)
-					end
-
-					if sums_url and not is_trusted_download_url(sums_url) then
-						-- A SHA256SUMS URL that fails the host allowlist is a tampering signal,
-						-- not a missing asset. Reporting it as "no checksums published" would
-						-- nudge the user to set allow_unverified_download in response to an
-						-- attack, so refuse outright and do not mention the escape hatch.
-						vim.fn.delete(temp_dir, "rf")
-						callback(false, "Refusing untrusted SHA256SUMS URL: " .. tostring(sums_url))
-					elseif sums_url then
-						local sums_file = vim.fs.joinpath(temp_dir, "SHA256SUMS")
-						vim.system(curl_cmd({ "-L", "-o", sums_file, "--", sums_url }), {}, function(sums_result)
-							vim.schedule(function()
-								if sums_result.code ~= 0 or vim.fn.filereadable(sums_file) ~= 1 then
-									vim.fn.delete(temp_dir, "rf")
-									callback(false, "Could not download SHA256SUMS: " .. (sums_result.stderr or ""))
-									return
-								end
-								local sums = parse_sha256sums(table.concat(vim.fn.readfile(sums_file), "\n"))
-								local expected = sums[asset_name]
-								if not expected then
-									vim.fn.delete(temp_dir, "rf")
-									callback(false, "SHA256SUMS has no entry for " .. asset_name)
-									return
-								end
-								verify_then_extract(expected)
-							end)
-						end)
-					else
-						verify_then_extract(nil)
-					end
-				end)
+				record_version(release_info, expected_version)
+				callback(true, "Binary downloaded successfully")
 			end)
+		end
+
+		fetch_file(download_url, temp_file, function(download_err)
+			if download_err then
+				return fail(temp_dir, callback, "Failed to download binary: " .. download_err)
+			end
+
+			if not sums_url then
+				return verify_and_install(nil)
+			end
+
+			if not is_trusted_download_url(sums_url) then
+				-- A SHA256SUMS URL that fails the host allowlist is a tampering
+				-- signal, not a missing asset. Reporting it as "no checksums
+				-- published" would nudge the user to set
+				-- allow_unverified_download in response to an attack, so refuse
+				-- outright and do not mention the escape hatch.
+				return fail(temp_dir, callback, "Refusing untrusted SHA256SUMS URL: " .. tostring(sums_url))
+			end
+
+			fetch_sums(sums_url, temp_dir, asset_name, verify_and_install)
 		end)
 	end)
 end
@@ -1046,6 +1147,7 @@ M._internal = {
 	parse_sha256sums = parse_sha256sums,
 	checksum_verdict = checksum_verdict,
 	install_binary = install_binary,
+	select_assets = select_assets,
 	load_native = load_native,
 	plugin_root = plugin_root,
 	get_binary_path = get_binary_path,
