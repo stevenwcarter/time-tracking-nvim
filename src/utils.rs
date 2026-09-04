@@ -1,3 +1,10 @@
+//! Buffer and window helpers shared by the command and autocommand entry
+//! points.
+//!
+//! Mostly predicates for "is this a tracking file?" — a `.md` file under the
+//! configured data directory — plus the memoized directory resolution they all
+//! share and the buffer read the renderers use.
+
 use std::{
     fs,
     path::{Path, PathBuf},

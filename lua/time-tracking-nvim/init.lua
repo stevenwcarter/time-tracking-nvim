@@ -566,7 +566,6 @@ local function download_binary(target, binary_path, callback, expected_version, 
 								local extracted_binary =
 									vim.fs.joinpath(temp_dir, "target", "release", vim.fs.basename(binary_path))
 
-								-- Check if extracted binary exists
 								if vim.fn.filereadable(extracted_binary) ~= 1 then
 									-- Clean up on error
 									vim.fn.delete(temp_dir, "rf")
@@ -652,16 +651,29 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	end)
 end
 
+-- Entry point: require("time-tracking-nvim").setup(opts).
+--
+-- opts, all optional and defaulted in default_config above:
+--   auto_download              fetch the native library when it is missing
+--   auto_update                re-fetch it when its version and the plugin's disagree
+--   allow_unverified_download  install a release that publishes no SHA256SUMS
+--                              entry for the asset (a digest *mismatch* is still
+--                              refused)
+--
+-- Resolves the platform and the library path, downloads if one of the above says
+-- to, adds the library's directory to package.cpath, then requires the native
+-- module. A download is asynchronous, so on that path the cpath and require steps
+-- run from the download callback and setup() returns before the plugin is loaded.
+-- The native module reports an initialization failure as `native.error` rather
+-- than as a Lua error; this echoes it either way.
 function M.setup(opts)
 	opts = opts or {}
 
-	-- Merge user config with defaults
 	local config = vim.tbl_extend("force", default_config, opts)
 
 	-- Store config for other functions
 	M.config = config
 
-	-- Get binary path
 	local binary_path, target = get_binary_path()
 	if not binary_path then
 		echo({
@@ -671,7 +683,6 @@ function M.setup(opts)
 		return
 	end
 
-	-- Check if binary exists
 	local binary_exists = vim.fn.filereadable(binary_path) == 1
 	
 	-- Check version compatibility
@@ -897,14 +908,21 @@ function M.setup(opts)
 end
 
 -- Expose commonly used functions
+
+-- Opens or closes the preview, via `:TimeTrackingToggle`. Like the two below it,
+-- this needs setup() to have loaded the native module — that is what registers
+-- the command.
 function M.toggle()
 	vim.cmd("TimeTrackingToggle")
 end
 
+-- Re-renders the preview immediately, via `:TimeTrackingUpdate`, skipping the
+-- TextChanged debounce.
 function M.update()
 	vim.cmd("TimeTrackingUpdate")
 end
 
+-- Closes the preview window, via `:TimeTrackingClose`.
 function M.close()
 	vim.cmd("TimeTrackingClose")
 end

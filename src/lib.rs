@@ -1,3 +1,11 @@
+//! Neovim plugin (loaded as a cdylib) that renders a live time-tracking day
+//! summary for the buffer being edited into a side split.
+//!
+//! `time_tracking_nvim` is the entry point Neovim calls when the native module
+//! is `require`d. It never returns `Err`: an initialization failure is reported
+//! through the `error` key of the dictionary it returns, because throwing out of
+//! the plugin entry point aborts Neovim on macOS (see the comment there).
+
 use std::panic::{self, AssertUnwindSafe};
 
 use nvim_oxi::api::opts::OptionOptsBuilder;
@@ -30,6 +38,10 @@ macro_rules! log_info {
     };
 }
 
+/// Writes a formatted message to Neovim's error output, via `api::err_writeln`.
+///
+/// That is an API call, so this must not be reached from a fast event context —
+/// a libuv timer callback, say. Use `debug_log!` there.
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
@@ -37,6 +49,11 @@ macro_rules! log_error {
     };
 }
 
+/// Writes a formatted message to stderr, but only when `TIME_TRACKING_DEBUG` is
+/// set in the environment.
+///
+/// Touches no Neovim API, which is why it is usable where `log_error!` is not:
+/// during plugin load, and from libuv's fast event context.
 #[macro_export]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
@@ -130,13 +147,17 @@ fn init_failure_dict(msg: &str) -> Dictionary {
     Dictionary::from_iter([("error", msg)])
 }
 
-/// inner function which accepts `config` for testing
+/// Registers the `TimeTracking*` user commands and the `TimeTrackingNvim`
+/// autocommand group, and schedules the startup auto-open.
+///
+/// This is the whole of initialization; `time_tracking_nvim` calls it on every
+/// plugin load. It is `pub`, and takes `config` explicitly instead of loading
+/// it, so the integration tests can drive it with a `Config` pointed at a
+/// temporary directory.
 pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> {
-    // Create command to toggle preview
     let toggle_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| toggle_preview_fn(config)));
 
-    // Create command to update preview (for auto-updating)
     let update_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| update_preview_fn(config)));
 
@@ -146,15 +167,12 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         catch_nvim_panic(|| update_preview_debounced(config))
     });
 
-    // Create command to auto-open preview
     let auto_open =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_open_preview(config)));
 
-    // Create command to auto-close preview
     let auto_close =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_close_preview(config)));
 
-    // Create command to manually close preview window
     let close_preview_cmd =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(close_preview));
 
@@ -180,7 +198,6 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
             .build(),
     )?;
 
-    // Register commands
     api::create_user_command(
         "TimeTrackingToggle",
         toggle_preview,

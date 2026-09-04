@@ -206,8 +206,12 @@ pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
     update_preview_fn(config)
 }
 
+/// `:TimeTrackingToggle`: closes the preview when a window is showing it,
+/// otherwise renders the current buffer's day summary into a new one.
+///
+/// Unlike the autocommand-driven paths, this says why nothing happened when the
+/// current buffer is not a tracking file — the user asked for it by name.
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
-    // Check if this is a time tracking file
     if !is_time_tracking_file(config)? {
         // The user typed :TimeTrackingToggle explicitly, and README names this
         // as the first troubleshooting step — so unlike the autocommand-driven
@@ -229,7 +233,6 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    // Check if preview window exists
     let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
     if has_preview {
@@ -248,13 +251,16 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     Ok(())
 }
 
+/// `:TimeTrackingUpdate`, and the render the debounce timer schedules: rebuilds
+/// the day summary in the preview.
+///
+/// Does nothing unless the current buffer is a tracking file *and* a preview
+/// window is already open — it never opens one.
 pub fn update_preview_fn(config: &'static Config) -> Result<()> {
-    // Only update if it's a time tracking file and preview is open
     if !is_time_tracking_file(config)? {
         return Ok(());
     }
 
-    // Check if preview window exists
     let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
     if has_preview {
@@ -398,7 +404,12 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
     Ok(())
 }
 
-/// Close the preview window if it exists
+/// Closes the preview window and clears both preview caches.
+///
+/// When the preview is the only window left it is not closed at all:
+/// `nvim_win_close` refuses the last window with E444, so a fresh listed buffer
+/// is swapped into it instead. The caches are cleared on every path, including
+/// the early return taken when no preview is open.
 pub fn close_preview() -> Result<()> {
     let Some((_, Some(mut win))) = find_preview()? else {
         set_cached_preview_buf(None);
@@ -445,16 +456,21 @@ pub fn close_preview() -> Result<()> {
 
 /// Auto-open preview window if this is a time tracking file and preview isn't open
 pub fn auto_open_preview(config: &'static Config) -> Result<()> {
-    // Add error handling wrapper to prevent panics
+    // Log and swallow the error rather than surfacing it at the command: this
+    // runs from the VimEnter/BufWinEnter autocommand, so propagating would
+    // re-echo the same failure on every buffer switch. Nothing here catches
+    // unwinds — panics are caught a level up, by `catch_nvim_panic` in `lib.rs`.
     match auto_open_preview_impl(config) {
         Ok(_) => Ok(()),
         Err(e) => {
             log_error!("Auto-open failed: {}", e);
-            Ok(()) // Don't propagate error to prevent crash
+            Ok(())
         }
     }
 }
 
+/// Fallible body behind [`auto_open_preview`]: renders and opens the preview for
+/// a tracking buffer that no preview window is showing yet.
 pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     // No delay here: this runs on Neovim's single event-loop thread, so
     // sleeping cannot let a pending window operation complete — it is exactly
@@ -466,10 +482,8 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    // Check if preview window already exists
     let has_preview = matches!(find_preview()?, Some((_, Some(_))));
 
-    // Only open if preview doesn't already exist
     if !has_preview {
         let buffer_content = get_buffer_content()?;
         let formatted_output = config.get_formatter().day_summary(
@@ -486,12 +500,15 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
 
 /// Auto-close preview window if we're not in a time tracking file
 pub fn auto_close_preview(config: &'static Config) -> Result<()> {
-    // Add error handling wrapper to prevent panics
+    // Log and swallow the error rather than surfacing it at the command, as
+    // `auto_open_preview` does: closing the preview is best-effort. Nothing here
+    // catches unwinds — panics are caught a level up, by `catch_nvim_panic` in
+    // `lib.rs`.
     match auto_close_preview_impl(config) {
         Ok(_) => Ok(()),
         Err(e) => {
             log_error!("Auto-close failed: {}", e);
-            Ok(()) // Don't propagate error to prevent crash
+            Ok(())
         }
     }
 }

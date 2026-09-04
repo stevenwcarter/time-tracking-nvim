@@ -8,6 +8,15 @@ local M = {}
 local health = vim.health
 local uv = vim.uv or vim.loop
 
+-- Entry point for `:checkhealth time-tracking-nvim`.
+--
+-- Reports, in order: platform support, the native library's presence and size,
+-- whether the plugin and binary versions agree, whether the binary directory is
+-- on package.cpath, whether the native module loads and initializes, whether the
+-- commands are registered, and which of curl/tar/unzip auto-download can use.
+--
+-- The first three checks return early on failure: with no supported platform or
+-- no readable library, every later check would only restate the same problem.
 function M.check()
 	health.start("time-tracking-nvim")
 
