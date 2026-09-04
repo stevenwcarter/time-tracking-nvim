@@ -16,7 +16,7 @@
 - **One commit per finding.** Code change + findings-file strip in the same commit. Never bulk-commit.
 - Commit message: `tidy(<lens>): <summary> [T<n>]` for TIDY items, `fix(<area>): <summary> [B<n>]` for bughunt items.
 - Every commit message ends with the trailer `Claude-Session: https://claude.ai/code/session_01NxDoU22rRXAhMnM1WRo3rs`
-- Strip on fix: `todo-parser TIDY.md --strip T<n>` or `todo-parser bughunt.md --strip B<n>`, staged in the same commit.
+- Strip on fix: run `todo-parser TIDY.md --strip T<n>` or `todo-parser bughunt.md --strip B<n>` as part of the task. **Do NOT stage or commit the findings files.** `TIDY.md`, `TODO.md`, `bughunt.md` and `WHATS-NEXT.md` are listed in `.git/info/exclude` — they are deliberately untracked local working files. Never `git add -f` them. Stage only source files; the strip is a local bookkeeping edit that keeps the findings file's signal high for the next pass.
 - After every Rust task: `cargo build && cargo clippy --all-targets -- -D warnings && cargo fmt`. All must be clean.
 - After every Lua task: re-read the edit; `luajit -bl <file> >/dev/null` if available.
 - Never `--no-verify`, never `--allow-dirty`.
@@ -90,7 +90,7 @@ Expected: PASS. These run single-tabpage, so behaviour is unchanged for them.
 
 ```bash
 todo-parser bughunt.md --strip B45
-git add src/preview.rs bughunt.md
+git add src/preview.rs
 git commit -m "fix(preview): scope preview visibility to the current tabpage [B45]
 
 nvim_list_wins enumerates every tabpage, so a preview open in tab 1 made
@@ -187,7 +187,7 @@ Expected: PASS — specifically `test_explicit_update_renders_immediately`, `tes
 
 ```bash
 todo-parser TIDY.md --strip T13
-git add src/preview.rs TIDY.md
+git add src/preview.rs
 git commit -m "tidy(duplication): extract render_current_buffer and preview_is_open [T13]
 
 The read-format-write pipeline was written out three times and the
@@ -238,7 +238,7 @@ Expected: PASS. `set_last_output` is now only reached on a successful write, whi
 
 ```bash
 todo-parser bughunt.md --strip B37
-git add src/preview.rs bughunt.md
+git add src/preview.rs
 git commit -m "fix(preview): restore nomodifiable when the line write fails [B37]
 
 set_lines(...)? returned early with modifiable still true, leaving the
@@ -330,7 +330,7 @@ Expected: PASS — all these paths were previously silent and remain non-fatal.
 
 ```bash
 todo-parser bughunt.md --strip B44
-git add src/preview.rs bughunt.md
+git add src/preview.rs
 git commit -m "fix(preview): record window-layout failures instead of discarding them [B44]
 
 Eleven layout calls were dropped with let _, so a squeezed or unstyled
@@ -396,7 +396,7 @@ Expected: PASS.
 
 ```bash
 todo-parser bughunt.md --strip B39
-git add src/preview.rs bughunt.md
+git add src/preview.rs
 git commit -m "fix(preview): return focus by window handle, not wincmd p [B39]
 
 wincmd p follows the previous-window pointer the split just repointed, so
@@ -461,7 +461,7 @@ Expected: all clean.
 
 ```bash
 todo-parser TIDY.md --strip T15
-git add src/preview.rs TIDY.md
+git add src/preview.rs
 git commit -m "tidy(idioms): name the preview window-geometry constants [T15]
 
 40, 3 and 20 were inline while the sibling debounce interval was already a
@@ -621,7 +621,7 @@ Expected: PASS. This is a milestone boundary — 7 tasks in.
 
 ```bash
 todo-parser TIDY.md --strip T14
-git add src/preview.rs TIDY.md
+git add src/preview.rs
 git commit -m "tidy(long-methods): split create_or_update_preview into four helpers [T14]
 
 125 lines doing four jobs becomes bail, resolve-or-create, write, ensure
@@ -790,7 +790,7 @@ Two findings, one code change — this is the one place the one-commit-per-findi
 ```bash
 todo-parser TIDY.md --strip T12
 todo-parser bughunt.md --strip B41
-git add src/lib.rs TIDY.md bughunt.md
+git add src/lib.rs
 git commit -m "tidy(duplication)!: table-driven command registration with descriptions [T12][B41]
 
 Collapses six near-identical create_user_command calls into a (name, desc,
@@ -846,7 +846,7 @@ Expected: `OK`. Then `integration_tests/lua/run_lua_tests.sh` — expected PASS.
 
 ```bash
 todo-parser TIDY.md --strip T11
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(dead-code): delete M.test, superseded by :checkhealth [T11]
 
 96 lines with no caller in the repo. health.lua's M.check performs the same
@@ -913,7 +913,7 @@ Expected: PASS.
 
 ```bash
 todo-parser TIDY.md --strip T4
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(duplication): one load_native for the native-module load check [T4]
 
 The pcall-require plus native.error two-stage check was written out at four
@@ -974,7 +974,7 @@ Expected: PASS. Then manually: `nvim -c 'checkhealth time-tracking-nvim' -c 'qa!
 
 ```bash
 todo-parser TIDY.md --strip T8
-git add lua/time-tracking-nvim/init.lua lua/time-tracking-nvim/health.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua lua/time-tracking-nvim/health.lua
 git commit -m "tidy(duplication): health.lua imports init.lua's path and version helpers [T8]
 
 health.lua rebuilt the binary path and re-did the .version read itself, so
@@ -1089,7 +1089,7 @@ Expected: PASS — Task 12's spec asserts on stub calls, not echo text, so the r
 
 ```bash
 todo-parser TIDY.md --strip T3
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(duplication): fold setup()'s twin download/update branches [T3]
 
 The binary-missing and needs-update branches were the same 60-line sequence
@@ -1143,7 +1143,7 @@ Expected: PASS.
 
 ```bash
 todo-parser TIDY.md --strip T2
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(long-methods): decompose M.setup into classify and dispatch [T2]
 
 243 lines covering config merge, path resolution, version classification, two
@@ -1208,7 +1208,7 @@ Expected: PASS — `spec_download_url.lua` and `spec_install.lua` cover parts of
 
 ```bash
 todo-parser TIDY.md --strip T1
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(long-methods): flatten download_binary into named phases [T1]
 
 239 lines nested seven levels deep becomes fetch, select, verify, extract,
@@ -1257,7 +1257,7 @@ Expected: PASS — `spec_version.lua` has 8 assertion sites against this functio
 
 ```bash
 todo-parser TIDY.md --strip T9
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(long-methods): extract parse_semver from is_version_newer [T9]
 
 46 lines running nil-guard, v-strip, split, zero-pad and compare becomes a
@@ -1289,7 +1289,7 @@ Expected: PASS — `spec_download_url.lua` exercises the allowlist directly.
 
 ```bash
 todo-parser TIDY.md --strip T10
-git add lua/time-tracking-nvim/init.lua TIDY.md
+git add lua/time-tracking-nvim/init.lua
 git commit -m "tidy(idioms): hoist the repo and releases URLs into constants [T10]
 
 The releases URL was inlined three times and the same repo spelled again as
@@ -1369,7 +1369,7 @@ Expected: PASS.
 
 ```bash
 todo-parser TIDY.md --strip T5
-git add src/utils.rs src/preview.rs src/lib.rs TIDY.md
+git add src/utils.rs src/preview.rs src/lib.rs
 git commit -m "tidy(duplication): extract PREVIEW_BUF_NAME and is_preview_buf [T5]
 
 Three of the four sites now share a constant and a helper. The fourth, the
@@ -1464,7 +1464,7 @@ Expected: PASS — `test_data_dir_memo_does_not_leak_between_configs` and `test_
 
 ```bash
 todo-parser TIDY.md --strip T16
-git add src/utils.rs TIDY.md
+git add src/utils.rs
 git commit -m "tidy(idioms): tighten resolved_data_dir's lock and borrow its memo key [T16]
 
 The guard was held across canonicalize(2) and two Neovim FFI calls, and the
@@ -1501,7 +1501,7 @@ Expected: all clean.
 
 ```bash
 todo-parser TIDY.md --strip T17
-git add src/utils.rs TIDY.md
+git add src/utils.rs
 git commit -m "tidy(idioms): let-else in is_buf_time_tracking_file [T17]
 
 clippy::manual_let_else — a match-with-early-return sat 22 lines above an
@@ -1535,7 +1535,7 @@ Expected: exit 0, no output. The tree is already clean under the stronger form.
 
 ```bash
 todo-parser TIDY.md --strip T18
-git add .github/workflows/ci.yml TIDY.md
+git add .github/workflows/ci.yml
 git commit -m "tidy(idioms): gate CI clippy on --all-targets [T18]
 
 CI ran the narrower form, so lints in the crate's own test code were never
@@ -1573,7 +1573,7 @@ Expected: `YAML OK`.
 
 ```bash
 todo-parser TIDY.md --strip T19
-git add .github/workflows/ci.yml TIDY.md
+git add .github/workflows/ci.yml
 git commit -m "tidy(opportunistic): cache the security job's toolchain [T19]
 
 cargo-audit and its full dependency tree were recompiled on every push and
