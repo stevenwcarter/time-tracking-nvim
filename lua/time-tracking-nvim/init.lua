@@ -991,9 +991,23 @@ function M.test()
 		return false
 	end
 
+	-- `pcall` succeeding only means the module loaded; init() may still have
+	-- failed inside it (e.g. time-tracking-cli misconfigured), in which case
+	-- `native` is a table carrying an `error` field rather than the plugin
+	-- API. This is the diagnostic entry point users reach for specifically
+	-- to find out why something isn't working, so it must not print success
+	-- on a failed init the way an unguarded check here would.
+	if type(native) == "table" and native.error then
+		echo({
+			{ "time-tracking-nvim test: ", "ErrorMsg" },
+			{ "Loaded but failed to initialize: " .. tostring(native.error), "Normal" },
+		})
+		return false
+	end
+
 	local binary_version = read_binary_version() or "unknown"
 	local version_match = binary_version == PLUGIN_VERSION
-	
+
 	echo({
 		{ "time-tracking-nvim test: ", "MoreMsg" },
 		{ "✓ Plugin is working correctly!", "Normal" },
