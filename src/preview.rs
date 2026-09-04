@@ -58,6 +58,20 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
     PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
 }
 
+/// The window in the *current tabpage* showing `buf`, if any.
+///
+/// Deliberately not `api::list_wins()`: that enumerates every tabpage, so a
+/// preview open in tab 1 would count as "already open" for tab 2 and the second
+/// tab would never get its own preview split.
+fn preview_win_in_current_tab(buf: &Buffer) -> Result<Option<Window>> {
+    for w in api::get_current_tabpage().list_wins()? {
+        if &w.get_buf()? == buf {
+            return Ok(Some(w));
+        }
+    }
+    Ok(None)
+}
+
 /// Resolve the preview buffer and the window showing it, in one pass.
 ///
 /// Returns `None` when no preview buffer exists; `Some((buf, None))` when the
@@ -88,13 +102,7 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
         return Ok(None);
     };
 
-    let mut window = None;
-    for w in api::list_wins() {
-        if w.get_buf()? == buf {
-            window = Some(w);
-            break;
-        }
-    }
+    let window = preview_win_in_current_tab(&buf)?;
 
     Ok(Some((buf, window)))
 }
