@@ -24,6 +24,7 @@ name = "time_tracking_nvim"
 [dependencies]
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
     "neovim-0-12",
+    "libuv",
 ] }
 time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
 

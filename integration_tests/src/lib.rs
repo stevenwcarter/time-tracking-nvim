@@ -403,6 +403,7 @@ fn test_time_tracking_with_config_creates_commands() {
         "TimeTrackingAutoClose",
         "TimeTrackingClose",
         "TimeTrackingMaybeCloseIfInvisible",
+        "TimeTrackingUpdateDebounced",
     ];
     
     for cmd in commands_to_test {
@@ -1050,5 +1051,141 @@ fn test_successful_init_returns_a_dictionary_without_an_error_key() {
     assert!(
         dict.get("error").is_none(),
         "a successful init must not advertise an error"
+    );
+}
+
+/// Locate the preview buffer, or panic with a useful message.
+fn preview_buffer() -> nvim_oxi::api::Buffer {
+    api::list_bufs()
+        .find(|b| {
+            b.get_name()
+                .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+                .unwrap_or(false)
+        })
+        .expect("preview buffer should exist")
+}
+
+/// The current contents of the preview buffer, joined back into one string.
+fn preview_text(buf: &nvim_oxi::api::Buffer) -> String {
+    buf.get_lines(.., false)
+        .unwrap()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[nvim_oxi::test]
+fn test_explicit_update_renders_immediately() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    // Open the preview holding a sentinel the real render must overwrite.
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+    let tick_before = preview.get_changedtick().unwrap();
+
+    // :TimeTrackingUpdate must render synchronously — a user who types the
+    // command expects to see the result, not to wait out a debounce window.
+    // No event-loop turn happens between this call and the assertions, so a
+    // debounced `update_preview_fn` would leave the sentinel in place.
+    time_tracking_nvim::update_preview_fn(config_static).unwrap();
+
+    assert!(preview.is_valid());
+    assert!(
+        preview.get_changedtick().unwrap() > tick_before,
+        "an explicit update must write the preview before it returns"
+    );
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "an explicit update must not be deferred behind the debounce"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_debounced_update_returns_without_blocking() {
+    use std::time::Instant;
+
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+    let tick_before = preview.get_changedtick().unwrap();
+
+    // Simulate a burst of keystrokes: each re-arms the timer and returns at
+    // once; none of them may block for the debounce interval.
+    let start = Instant::now();
+    for _ in 0..20 {
+        time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+    }
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 100,
+        "20 debounced updates took {:?}; the debounce must not block the \
+         event loop",
+        elapsed
+    );
+
+    // The whole burst must coalesce: nothing has been rendered yet, because
+    // the event loop has not turned.
+    assert_eq!(
+        preview.get_changedtick().unwrap(),
+        tick_before,
+        "the debounce must not render synchronously on each keystroke"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_debounced_update_eventually_renders() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+
+    // Turn the event loop so the one-shot timer can fire and the render it
+    // schedules can run. Without this the debounce would be indistinguishable
+    // from doing nothing at all. `bufnr()` takes a pattern, so address the
+    // preview by handle instead.
+    let handle = preview.handle();
+    api::exec2(
+        &format!(
+            "lua vim.wait(2000, function() \
+               local l = vim.api.nvim_buf_get_lines({handle}, 0, 1, false)[1] or '' \
+               return not l:find('PLACEHOLDER', 1, true) \
+             end, 10)"
+        ),
+        &Default::default(),
+    )
+    .unwrap();
+
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "the debounced update must eventually render; preview still reads {:?}",
+        preview_text(&preview)
     );
 }

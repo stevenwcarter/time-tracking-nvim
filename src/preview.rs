@@ -1,6 +1,9 @@
 use super::*;
 
 use std::cell::RefCell;
+use std::time::Duration;
+
+use nvim_oxi::libuv::TimerHandle;
 
 thread_local! {
     /// Cached handle to the preview buffer.
@@ -85,6 +88,52 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
     }
 
     Ok(Some((buf, window)))
+}
+
+/// Trailing-edge debounce interval for autocommand-driven updates.
+const DEBOUNCE: Duration = Duration::from_millis(150);
+
+thread_local! {
+    /// In-flight debounce timer, if any.
+    ///
+    /// Re-armed on each keystroke, so a burst of typing costs one render at
+    /// the end of the burst rather than one per character.
+    static PENDING_UPDATE: RefCell<Option<TimerHandle>> = const { RefCell::new(None) };
+}
+
+/// Autocommand entry point: coalesce a burst of keystrokes into one render.
+///
+/// `TextChanged`/`TextChangedI` fire once per keystroke on Neovim's single UI
+/// thread, and each render pays canonicalize syscalls, a window scan, a
+/// full-buffer read, and a re-parse. Arming a one-shot timer instead keeps the
+/// per-keystroke cost to cancelling and re-arming it.
+///
+/// `:TimeTrackingUpdate` deliberately still calls [`update_preview_fn`]
+/// directly: a user who types the command expects to see the result, not to
+/// wait out the debounce window.
+pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
+    // Cancel the render armed by the previous keystroke, so the burst renders
+    // once, at its end.
+    PENDING_UPDATE.with(|cell| {
+        if let Some(timer) = cell.borrow_mut().as_mut() {
+            let _ = timer.stop();
+        }
+    });
+
+    // The libuv callback runs in Neovim's fast event context, where the API is
+    // off limits (`E5560: nvim_buf_set_lines must not be called in a fast
+    // event context`), so hand the render back to the main loop.
+    let timer = TimerHandle::once(DEBOUNCE, move || {
+        PENDING_UPDATE.with(|cell| *cell.borrow_mut() = None);
+        schedule(move |()| {
+            if let Err(e) = update_preview_fn(config) {
+                log_error!("[time-tracking-nvim] debounced update failed: {}", e);
+            }
+        });
+    })?;
+
+    PENDING_UPDATE.with(|cell| *cell.borrow_mut() = Some(timer));
+    Ok(())
 }
 
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {

@@ -18,7 +18,7 @@ pub mod utils;
 use preview::*;
 pub use preview::{
     auto_open_preview, close_preview, create_or_update_preview, toggle_preview_fn,
-    update_preview_fn,
+    update_preview_debounced, update_preview_fn,
 };
 
 #[macro_export]
@@ -140,6 +140,12 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     let update_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| update_preview_fn(config)));
 
+    // Create command to update the preview from the TextChanged autocommands,
+    // coalescing a burst of keystrokes into a single render.
+    let update_preview_debounced_cmd = Function::from_fn(move |_: CommandArgs| {
+        catch_nvim_panic(|| update_preview_debounced(config))
+    });
+
     // Create command to auto-open preview
     let auto_open =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_open_preview(config)));
@@ -188,6 +194,12 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     )?;
 
     api::create_user_command(
+        "TimeTrackingUpdateDebounced",
+        update_preview_debounced_cmd,
+        &CreateCommandOpts::builder().build(),
+    )?;
+
+    api::create_user_command(
         "TimeTrackingAutoOpen",
         auto_open,
         &CreateCommandOpts::builder().build(),
@@ -210,7 +222,7 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::command("autocmd!")?;
     api::command("autocmd BufEnter,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
     api::command("autocmd WinClosed * TimeTrackingMaybeCloseIfInvisible <amatch>")?;
-    api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdate")?;
+    api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdateDebounced")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
     api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
     api::command("autocmd QuitPre * TimeTrackingClose")?;
