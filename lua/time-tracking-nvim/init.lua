@@ -174,6 +174,41 @@ local function is_version_newer(current, new)
 	return false -- Versions are equal
 end
 
+-- Shared curl hardening for both the API call and the archive download.
+--   --proto/--proto-redir =https  : curl's default redirect protocol set
+--                                   includes plain HTTP, so a 302 to http://
+--                                   would fetch the library we are about to
+--                                   dlopen in cleartext.
+--   --fail-with-body              : without -f curl exits 0 on an HTTP error,
+--                                   so a 403 rate-limit body parsed as JSON
+--                                   and surfaced as "unsupported platform".
+--   --max-time/--connect-timeout  : a black-holed connection otherwise left
+--                                   the callback pending forever.
+local CURL_HARDENING = {
+	"--proto",
+	"=https",
+	"--proto-redir",
+	"=https",
+	"--tlsv1.2",
+	"--fail-with-body",
+	"--max-redirs",
+	"5",
+	"--connect-timeout",
+	"10",
+	"--max-time",
+	"60",
+	"--retry",
+	"2",
+}
+
+-- Build a curl argv: {"curl", <hardening>, unpack(extra)}
+local function curl_cmd(extra)
+	local cmd = { "curl" }
+	vim.list_extend(cmd, CURL_HARDENING)
+	vim.list_extend(cmd, extra)
+	return cmd
+end
+
 -- Download and extract binary from GitHub releases
 local function download_binary(target, binary_path, callback, expected_version)
 	-- Ask for the release we actually want. Falling back to /latest only when
@@ -184,12 +219,7 @@ local function download_binary(target, binary_path, callback, expected_version)
 	local release_url = expected_version and (api_base .. "/tags/v" .. expected_version)
 		or (api_base .. "/latest")
 
-	local cmd = {
-		"curl",
-		"-L",
-		"-s",
-		release_url,
-	}
+	local cmd = curl_cmd({ "-L", "-s", release_url })
 
 	vim.system(cmd, {}, function(result)
 		vim.schedule(function()
@@ -204,6 +234,27 @@ local function download_binary(target, binary_path, callback, expected_version)
 				return
 			end
 
+			-- A rate-limited or errored API response decodes to valid JSON with
+			-- no `assets` field, which used to fall through to "No binary found
+			-- for target: …" — telling the user their platform is unsupported
+			-- when they were merely rate-limited (60 req/hr per IP, routine on NAT).
+			if type(release_info) ~= "table" then
+				callback(false, "Unexpected GitHub API response: " .. tostring(result.stdout):sub(1, 200))
+				return
+			end
+			if release_info.message then
+				callback(false, "GitHub API error: " .. tostring(release_info.message))
+				return
+			end
+			if type(release_info.assets) ~= "table" then
+				callback(
+					false,
+					"GitHub API response had no assets (rate limited or malformed): "
+						.. tostring(result.stdout):sub(1, 200)
+				)
+				return
+			end
+
 			-- Find the appropriate asset
 			local asset_name = string.format("time-tracking-nvim-%s.tar.gz", target)
 			if target:match("windows") then
@@ -211,7 +262,7 @@ local function download_binary(target, binary_path, callback, expected_version)
 			end
 
 			local download_url = nil
-			for _, asset in ipairs(release_info.assets or {}) do
+			for _, asset in ipairs(release_info.assets) do
 				if asset.name == asset_name then
 					download_url = asset.browser_download_url
 					break
@@ -232,7 +283,7 @@ local function download_binary(target, binary_path, callback, expected_version)
 			vim.fn.mkdir(temp_dir, "p")
 			local temp_file = vim.fs.joinpath(temp_dir, asset_name)
 
-			local download_cmd = { "curl", "-L", "-o", temp_file, download_url }
+			local download_cmd = curl_cmd({ "-L", "-o", temp_file, download_url })
 			vim.system(download_cmd, {}, function(download_result)
 				vim.schedule(function()
 					if download_result.code ~= 0 then
