@@ -52,6 +52,30 @@ EOF
 The plugin itself works with zero configuration, but does utilize the configuration for
 the [time-tracking-cli utility](https://github.com/stevenwcarter/time-tracking-cli)
 
+### Setup options
+
+```lua
+require("time-tracking-nvim").setup({
+  auto_download = true,              -- download the native binary if it is missing
+  auto_update = true,                -- re-download when the plugin version changes
+  allow_unverified_download = false, -- install a binary that has no published digest
+})
+```
+
+- `auto_download` (default `true`) — fetch the release archive for your platform
+  when the native binary is not present.
+- `auto_update` (default `true`) — re-download when the installed binary's version
+  no longer matches the plugin's.
+- `allow_unverified_download` (default `false`) — downloads are verified against
+  the `SHA256SUMS` asset published with each release, and the archive is only
+  extracted if its digest matches. Verification is fail-closed: if a release has
+  no `SHA256SUMS`, or the digest does not match, the download is refused rather
+  than installed. **Releases up to and including v0.1.7 predate `SHA256SUMS`**, so
+  pinning one of those tags requires setting this to `true` to install at all.
+  Leave it `false` unless you are pinning an old tag or using an air-gapped
+  mirror — a downloaded native library is loaded with `require`, which executes
+  its code inside your editor.
+
 
 ## Usage
 

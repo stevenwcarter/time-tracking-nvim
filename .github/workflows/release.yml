@@ -159,7 +159,11 @@ jobs:
           find artifacts -name "*.tar.gz" -o -name "*.zip" | while read file; do
             cp "$file" release-assets/
           done
-          ls -la release-assets/
+          cd release-assets
+          # Names only, no paths: the Lua verifier matches on basename.
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
 
       - name: Create Release
         uses: softprops/action-gh-release@v1

@@ -14,6 +14,10 @@ local default_config = {
 	-- preview_width = nil, -- Will use 1/3 of screen width
 	auto_download = true, -- Automatically download binaries if missing
 	auto_update = true, -- Automatically update binary when plugin version changes
+	-- Escape hatch for releases published before SHA256SUMS existed (<= v0.1.7)
+	-- and for air-gapped mirrors. Leaving this false means a downloaded native
+	-- library is never dlopen'd without matching a published digest.
+	allow_unverified_download = false,
 }
 
 -- Add the binary directory to Lua's cpath
@@ -233,8 +237,48 @@ local function is_trusted_download_url(url)
 	return host:match("%.githubusercontent%.com$") ~= nil
 end
 
+-- Compute the SHA-256 of a file.
+--
+-- Prefers a subprocess over reading the file into Lua: readfile/writefile
+-- round-trips are lossy for binary content, and the digest has to match
+-- byte-for-byte what sha256sum computed in CI.
+local function file_sha256(path)
+	local out
+	if vim.fn.executable("sha256sum") == 1 then
+		out = vim.system({ "sha256sum", "--", path }, { text = true }):wait()
+	elseif vim.fn.executable("shasum") == 1 then
+		out = vim.system({ "shasum", "-a", "256", "--", path }, { text = true }):wait()
+	elseif vim.fn.executable("certutil") == 1 then
+		out = vim.system({ "certutil", "-hashfile", path, "SHA256" }, { text = true }):wait()
+	else
+		return nil, "no SHA-256 implementation available (need sha256sum, shasum or certutil)"
+	end
+
+	if not out or out.code ~= 0 then
+		return nil, "checksum command failed: " .. tostring(out and out.stderr or "?")
+	end
+
+	local digest = tostring(out.stdout):match("%x%x%x%x%x%x%x%x%x+")
+	if not digest then
+		return nil, "could not parse checksum output"
+	end
+	return digest:lower()
+end
+
+-- Parse `sha256sum` output into { [basename] = digest }.
+local function parse_sha256sums(text)
+	local sums = {}
+	for line in tostring(text):gmatch("[^\r\n]+") do
+		local digest, name = line:match("^(%x+)%s+%*?(%S+)$")
+		if digest and name then
+			sums[vim.fs.basename(name)] = digest:lower()
+		end
+	end
+	return sums
+end
+
 -- Download and extract binary from GitHub releases
-local function download_binary(target, binary_path, callback, expected_version)
+local function download_binary(target, binary_path, callback, expected_version, opts)
 	-- Ask for the release we actually want. Falling back to /latest only when
 	-- no version was requested: previously this always fetched /latest and then
 	-- recorded expected_version, so the .version file was an assertion about
@@ -286,10 +330,12 @@ local function download_binary(target, binary_path, callback, expected_version)
 			end
 
 			local download_url = nil
+			local sums_url = nil
 			for _, asset in ipairs(release_info.assets) do
 				if asset.name == asset_name then
 					download_url = asset.browser_download_url
-					break
+				elseif asset.name == "SHA256SUMS" then
+					sums_url = asset.browser_download_url
 				end
 			end
 
@@ -322,83 +368,144 @@ local function download_binary(target, binary_path, callback, expected_version)
 						return
 					end
 
-					-- Extract the archive
-					local extract_cmd
-					if asset_name:match("%.zip$") then
-						extract_cmd = { "unzip", "-q", "-o", temp_file, "-d", temp_dir }
-					else
-						extract_cmd = { "tar", "-xzf", temp_file, "-C", temp_dir }
-					end
+					-- Verify BEFORE extracting: everything downstream — extract, copy
+					-- into lua/, and the pcall(require, …) that dlopens it — treats
+					-- these bytes as trusted native code.
+					local allow_unverified = opts and opts.allow_unverified
 
-					vim.system(extract_cmd, {}, function(extract_result)
-						vim.schedule(function()
-							if extract_result.code ~= 0 then
-								-- Clean up on error
+					local function verify_then_extract(expected_digest)
+						if expected_digest then
+							local actual, digest_err = file_sha256(temp_file)
+							if not actual then
 								vim.fn.delete(temp_dir, "rf")
-								callback(false, "Failed to extract binary: " .. (extract_result.stderr or ""))
+								callback(false, "Could not compute checksum: " .. tostring(digest_err))
 								return
 							end
-
-							-- Move the binary to the correct location
-							local extracted_binary =
-								vim.fs.joinpath(temp_dir, "target", "release", vim.fs.basename(binary_path))
-
-							-- Check if extracted binary exists
-							if vim.fn.filereadable(extracted_binary) ~= 1 then
-								-- Clean up on error
+							if actual ~= expected_digest then
 								vim.fn.delete(temp_dir, "rf")
-								callback(false, "Extracted binary not found at: " .. extracted_binary)
+								callback(
+									false,
+									string.format(
+										"Checksum mismatch for %s (expected %s, got %s) - refusing to install",
+										asset_name,
+										expected_digest,
+										actual
+									)
+								)
 								return
 							end
+						elseif not allow_unverified then
+							vim.fn.delete(temp_dir, "rf")
+							callback(
+								false,
+								"No SHA256SUMS published for this release, so the binary cannot be "
+									.. "verified. Releases up to v0.1.7 predate checksums. To install "
+									.. "anyway, use setup({ allow_unverified_download = true })."
+							)
+							return
+						end
 
-							local move_cmd = { "cp", extracted_binary, binary_path }
-							vim.system(move_cmd, {}, function(move_result)
-								vim.schedule(function()
-									-- Clean up temp files
+						-- Extract the archive
+						local extract_cmd
+						if asset_name:match("%.zip$") then
+							extract_cmd = { "unzip", "-q", "-o", temp_file, "-d", temp_dir }
+						else
+							extract_cmd = { "tar", "-xzf", temp_file, "-C", temp_dir }
+						end
+
+						vim.system(extract_cmd, {}, function(extract_result)
+							vim.schedule(function()
+								if extract_result.code ~= 0 then
+									-- Clean up on error
 									vim.fn.delete(temp_dir, "rf")
+									callback(false, "Failed to extract binary: " .. (extract_result.stderr or ""))
+									return
+								end
 
-									if move_result.code ~= 0 then
-										callback(
-											false,
-											"Failed to copy binary to target location: " .. (move_result.stderr or "")
-										)
-										return
-									end
+								-- Move the binary to the correct location
+								local extracted_binary =
+									vim.fs.joinpath(temp_dir, "target", "release", vim.fs.basename(binary_path))
 
-									-- Record the tag we actually downloaded, not the one we asked
-									-- for: with a pinned plugin tag these can differ, and recording
-									-- the request made every later version comparison a no-op.
-									local resolved_tag = release_info.tag_name
-									local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
+								-- Check if extracted binary exists
+								if vim.fn.filereadable(extracted_binary) ~= 1 then
+									-- Clean up on error
+									vim.fn.delete(temp_dir, "rf")
+									callback(false, "Extracted binary not found at: " .. extracted_binary)
+									return
+								end
 
-									if expected_version and version_to_store ~= expected_version then
-										vim.api.nvim_echo({
-											{ "time-tracking-nvim: ", "WarningMsg" },
-											{
-												string.format(
-													"requested v%s but the release resolved to %s; recording %s",
-													expected_version,
-													tostring(resolved_tag),
-													version_to_store
-												),
-												"Normal",
-											},
-										}, false, {})
-									end
+								local move_cmd = { "cp", extracted_binary, binary_path }
+								vim.system(move_cmd, {}, function(move_result)
+									vim.schedule(function()
+										-- Clean up temp files
+										vim.fn.delete(temp_dir, "rf")
 
-									if not write_binary_version(version_to_store) then
-										-- Not a fatal error, just warn
-										vim.api.nvim_echo({
-											{ "time-tracking-nvim: ", "WarningMsg" },
-											{ "Warning: Could not save version info", "Normal" },
-										}, false, {})
-									end
+										if move_result.code ~= 0 then
+											callback(
+												false,
+												"Failed to copy binary to target location: " .. (move_result.stderr or "")
+											)
+											return
+										end
 
-									callback(true, "Binary downloaded successfully")
+										-- Record the tag we actually downloaded, not the one we asked
+										-- for: with a pinned plugin tag these can differ, and recording
+										-- the request made every later version comparison a no-op.
+										local resolved_tag = release_info.tag_name
+										local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
+
+										if expected_version and version_to_store ~= expected_version then
+											vim.api.nvim_echo({
+												{ "time-tracking-nvim: ", "WarningMsg" },
+												{
+													string.format(
+														"requested v%s but the release resolved to %s; recording %s",
+														expected_version,
+														tostring(resolved_tag),
+														version_to_store
+													),
+													"Normal",
+												},
+											}, false, {})
+										end
+
+										if not write_binary_version(version_to_store) then
+											-- Not a fatal error, just warn
+											vim.api.nvim_echo({
+												{ "time-tracking-nvim: ", "WarningMsg" },
+												{ "Warning: Could not save version info", "Normal" },
+											}, false, {})
+										end
+
+										callback(true, "Binary downloaded successfully")
+									end)
 								end)
 							end)
 						end)
-					end)
+					end
+
+					if sums_url and is_trusted_download_url(sums_url) then
+						local sums_file = vim.fs.joinpath(temp_dir, "SHA256SUMS")
+						vim.system(curl_cmd({ "-L", "-o", sums_file, "--", sums_url }), {}, function(sums_result)
+							vim.schedule(function()
+								if sums_result.code ~= 0 or vim.fn.filereadable(sums_file) ~= 1 then
+									vim.fn.delete(temp_dir, "rf")
+									callback(false, "Could not download SHA256SUMS: " .. (sums_result.stderr or ""))
+									return
+								end
+								local sums = parse_sha256sums(table.concat(vim.fn.readfile(sums_file), "\n"))
+								local expected = sums[asset_name]
+								if not expected then
+									vim.fn.delete(temp_dir, "rf")
+									callback(false, "SHA256SUMS has no entry for " .. asset_name)
+									return
+								end
+								verify_then_extract(expected)
+							end)
+						end)
+					else
+						verify_then_extract(nil)
+					end
 				end)
 			end)
 		end)
@@ -538,7 +645,7 @@ function M.setup(opts)
 					},
 				}, false, {})
 			end
-		end, PLUGIN_VERSION)
+		end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
 		return
 	-- Handle version updates for existing binaries
 	elseif needs_update and config.auto_download and config.auto_update then
@@ -599,7 +706,7 @@ function M.setup(opts)
 						{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
 					}, false, {})
 				end
-			end, PLUGIN_VERSION)
+			end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
 			return
 		end
 	elseif needs_update and not config.auto_update then
@@ -691,7 +798,7 @@ function M.download()
 				{ "Download failed: " .. message, "Normal" },
 			}, false, {})
 		end
-	end, PLUGIN_VERSION)
+	end, PLUGIN_VERSION, { allow_unverified = (M.config or {}).allow_unverified_download })
 end
 
 -- Check version information
@@ -822,6 +929,8 @@ M._internal = {
 	get_platform_info = get_platform_info,
 	normalize_os_name = normalize_os_name,
 	is_trusted_download_url = is_trusted_download_url,
+	file_sha256 = file_sha256,
+	parse_sha256sums = parse_sha256sums,
 }
 
 return M
