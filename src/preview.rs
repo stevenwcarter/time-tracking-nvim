@@ -158,10 +158,16 @@ thread_local! {
     /// boundary.
     ///
     /// Cleared by [`throttle_fire`], which the timer reaches through
-    /// `:TimeTrackingThrottleFire`. There is no cancellation path — a booked
-    /// timer always fires exactly once and always clears this — so the only
-    /// way it can stick is an arming failure, which
-    /// [`update_preview_throttled`] rolls back explicitly.
+    /// `:TimeTrackingThrottleFire`. This plugin never cancels a booking of its
+    /// own, but "a booked timer always fires exactly once, and always clears
+    /// this" is an *assumption about the whole Neovim process*, not something
+    /// this code can enforce: a `timer_stopall()` from unrelated code sharing
+    /// the session destroys the booking without ever reaching
+    /// [`throttle_fire`]. A flag left set that way would drop every
+    /// autocommand-driven render for the rest of the session, so
+    /// [`update_preview_throttled`] defends against it twice — it rolls the
+    /// flag back explicitly when arming fails, and it treats a booking older
+    /// than any deadline it could have had as lost.
     static THROTTLE_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -190,10 +196,25 @@ pub fn update_preview_throttled(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    // A render is already booked for this window. Leave its deadline alone —
-    // moving it is exactly what would turn this back into a debounce.
     if THROTTLE_PENDING.get() {
-        return Ok(());
+        // A booked render is always due within `THROTTLE` of `LAST_RENDER`, so
+        // twice that with no render having happened means no timer is coming.
+        // (`THROTTLE_PENDING` implies `LAST_RENDER` is `Some` — the flag is
+        // only set on a path that required it — so the `None` arm is
+        // defensive, and treating it as stale is the safe direction.)
+        let stale = LAST_RENDER
+            .get()
+            .is_none_or(|last| last.elapsed() >= THROTTLE * 2);
+        if !stale {
+            // A genuine booking: leave its deadline alone — moving it is
+            // exactly what would turn this back into a debounce.
+            return Ok(());
+        }
+        // The booking outlived any deadline it could have had, so its timer is
+        // gone — `timer_stopall()` from unrelated code sharing this Neovim,
+        // say. Drop it and re-arm below, rather than staying dead for the rest
+        // of the session.
+        THROTTLE_PENDING.set(false);
     }
 
     let remaining = LAST_RENDER.get().and_then(|last| {

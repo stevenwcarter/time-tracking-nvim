@@ -1123,8 +1123,9 @@ fn test_explicit_update_renders_immediately() {
 
     // :TimeTrackingUpdate must render synchronously — a user who types the
     // command expects to see the result, not to wait out a throttle window.
-    // No event-loop turn happens between this call and the assertions, so a
-    // debounced `update_preview_fn` would leave the sentinel in place.
+    // No event-loop turn happens between this call and the assertions, so
+    // anything that deferred the write — the debounce this replaced, or a
+    // render booked behind the throttle — would leave the sentinel in place.
     time_tracking_nvim::update_preview_fn(config_static).unwrap();
 
     assert!(preview.is_valid());
@@ -1260,6 +1261,70 @@ fn test_throttled_burst_books_exactly_one_render() {
 }
 
 #[nvim_oxi::test]
+fn test_throttled_render_is_booked_on_the_window_boundary() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+
+    // Registered after the preview exists, so no BufEnter handler runs during
+    // setup. Needed because the booking below arms a real timer, which fires
+    // `:TimeTrackingThrottleFire`.
+    time_tracking_with_config(config_static).unwrap();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    // Burn the leading edge. That render is synchronous and arms nothing, so
+    // turning the event loop below cannot let a booked render fire early and
+    // restart the window.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    // Spend ~60ms of the 200ms window, so a boundary-aligned booking is
+    // measurably shorter than a `THROTTLE`-from-now one.
+    api::exec2(
+        "lua vim.wait(60, function() return false end)",
+        &Default::default(),
+    )
+    .unwrap();
+
+    // A change inside the window books the trailing render.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    // Nothing else in this test arms a vimscript timer — `vim.wait` does not —
+    // so the single entry is ours.
+    let timers: i64 = api::eval("len(timer_info())").unwrap();
+    assert_eq!(
+        timers, 1,
+        "the change must have been booked, not rendered; if the ~60ms wait \
+         overran the 200ms window this test measures nothing"
+    );
+
+    // `timer_info()`'s `time` is the interval the timer was *set to*, i.e. the
+    // exact value `arm_throttle_timer` passed. Booking at the window boundary
+    // makes it `THROTTLE - elapsed` (~140ms); booking `THROTTLE` from now
+    // would make it 200 — which is what happens if the remaining-time
+    // arithmetic is ever replaced with a flat `arm_throttle_timer(THROTTLE)`.
+    // The 190 threshold leaves ~50ms of slack over the expected ~140, so a
+    // slow or loaded machine cannot flake it, while still failing a flat 200.
+    let booked_ms: i64 = api::eval("timer_info()[0].time").unwrap();
+    assert!(
+        booked_ms < 190,
+        "the trailing render must be booked at the window boundary \
+         (~140ms after a 60ms wait), not a full THROTTLE from now; \
+         timer_start got {booked_ms}ms"
+    );
+
+    // Leave nothing armed for whatever test runs next in this Neovim.
+    api::command("call timer_stopall()").unwrap();
+}
+
+#[nvim_oxi::test]
 fn test_throttled_update_renders_the_trailing_change() {
     cleanup_preview_buffers();
 
@@ -1311,6 +1376,38 @@ fn test_throttled_update_renders_the_trailing_change() {
          preview stale; it still reads {:?}",
         preview_text(&preview)
     );
+
+    // Nothing is armed now — `throttle_fire` cleared the booking as it ran —
+    // so turning the event loop another ~60ms is safe, and it is what makes
+    // the assertion below able to tell two states apart. The trailing render
+    // lands *on* the leading edge's own 200ms boundary, so measured from the
+    // leading edge the next change is at ~260ms (outside its window) while
+    // measured from the trailing render it is at ~60ms (inside its window).
+    // Without this gap the two are a millisecond or two apart and the
+    // assertion proves nothing.
+    api::exec2(
+        "lua vim.wait(60, function() return false end)",
+        &Default::default(),
+    )
+    .unwrap();
+
+    // `throttle_fire` stamped `LAST_RENDER` as the trailing render landed, so
+    // this change falls inside a *fresh* window and must be booked rather
+    // than rendered. Without that stamp `LAST_RENDER` still holds the leading
+    // edge, ~260ms ago, and this change renders synchronously — which is how
+    // dropping it roughly doubles the render rate under sustained typing
+    // (~0, 200, 210, 410, 420…).
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    assert!(
+        preview_text(&preview).contains("PLACEHOLDER"),
+        "a trailing render must restart the throttle window, so the change \
+         after it is booked rather than rendered; the preview reads {:?}",
+        preview_text(&preview)
+    );
+
+    // Leave nothing armed for whatever test runs next in this Neovim.
+    api::command("call timer_stopall()").unwrap();
 }
 
 #[nvim_oxi::test]
@@ -1392,6 +1489,61 @@ fn test_throttled_trailing_render_lands_during_insert_mode() {
 }
 
 #[nvim_oxi::test]
+fn test_throttle_recovers_from_a_booking_destroyed_behind_its_back() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    // Registered after the preview exists, so no BufEnter handler runs during
+    // setup. Needed because the booking below arms a real timer, which fires
+    // `:TimeTrackingThrottleFire`.
+    time_tracking_with_config(config_static).unwrap();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    // Burn the leading edge, then book a trailing render inside the window.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    // Destroy the booking behind the throttle's back — exactly what unrelated
+    // code sharing this Neovim does. The timer is gone, but `THROTTLE_PENDING`
+    // is still set, because only `throttle_fire` clears it and it will never
+    // run now.
+    api::command("call timer_stopall()").unwrap();
+
+    // Re-prime the sentinel, then turn the event loop past twice the throttle
+    // window (2 x 200ms), so the orphaned booking is provably older than any
+    // deadline it could have had.
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    api::exec2(
+        "lua vim.wait(450, function() return false end)",
+        &Default::default(),
+    )
+    .unwrap();
+
+    // A later change must still render. Without the staleness escape hatch
+    // the stranded flag drops this one — and every other autocommand-driven
+    // update for the rest of the session — leaving only `:TimeTrackingUpdate`
+    // working, with nothing to point at as the cause.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "a change arriving after a destroyed booking must still render; the \
+         preview still reads {:?}",
+        preview_text(&preview)
+    );
+}
+
+#[nvim_oxi::test]
 fn test_throttled_update_renders_nothing_for_a_non_tracking_file() {
     cleanup_preview_buffers();
 
@@ -1415,6 +1567,10 @@ fn test_throttled_update_renders_nothing_for_a_non_tracking_file() {
     let mut untracked = api::create_buf(false, false).unwrap();
     untracked.set_name(&readme).unwrap();
     api::set_current_buf(&untracked).unwrap();
+
+    // Establish a known window boundary rather than inheriting whatever the
+    // ambient thread-local state happens to be.
+    time_tracking_nvim::reset_throttle_for_test();
 
     time_tracking_nvim::update_preview_throttled(config_static).unwrap();
 

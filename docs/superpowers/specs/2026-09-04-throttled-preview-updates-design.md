@@ -94,7 +94,8 @@ static THROTTLE_PENDING: Cell<bool>;
 2. **If `THROTTLE_PENDING` is set → return.** A render is already booked at this window's deadline.
    *This single line is the entire difference between a throttle and a debounce.* The debounce
    cancelled and re-armed here, pushing the deadline out for as long as the user kept typing; the
-   throttle leaves the booked deadline alone.
+   throttle leaves the booked deadline alone. (With one exception, added later: a booking older than
+   `2 × THROTTLE` is treated as lost rather than pending — see invariant 5.)
 3. **If `LAST_RENDER` is `None`, or `≥ THROTTLE` has elapsed since it → render now**, synchronously,
    and stamp `LAST_RENDER = Instant::now()`. This is the leading edge.
 4. **Otherwise → book the trailing render.** Set `THROTTLE_PENDING = true` and
@@ -112,7 +113,9 @@ static THROTTLE_PENDING: Cell<bool>;
    "Error executing vim function callback" from the timer, detached from any user action.
 
 No cancellation path is needed anywhere: the flag is what suppresses redundant arming, so a booked
-timer always fires exactly once and always clears its own flag.
+timer always fires exactly once and always clears its own flag — within this plugin. That is a
+property of *this* code, not of the process it shares; see invariant 5 for what recovers the flag when
+something else destroys the timer.
 
 ### Naming
 
@@ -168,6 +171,28 @@ Recorded so a later change that breaks one can be traced back here.
    bounds the work.
 4. **Plugin state is thread-local on Neovim's single UI thread.** `LAST_RENDER`/`THROTTLE_PENDING` are
    `Cell`s with no synchronization, which is only sound under that assumption.
+5. **No other code in the session calls `timer_stopall()`** — *was assumed, now recovered from.*
+   `THROTTLE_PENDING` is cleared only by `throttle_fire`, so anything that destroys a booked timer
+   without running it — most realistically a `timer_stopall()` from unrelated code sharing the Neovim
+   process — used to strand the flag, and a stranded flag made `update_preview_throttled` return early
+   forever: autocommand-driven updates dead for the rest of the session, `:TimeTrackingUpdate` still
+   working, and nothing to point at as the cause. `update_preview_throttled` now treats a booking with
+   no render inside `2 × THROTTLE` of `LAST_RENDER` as lost — a booked render is always due within one
+   `THROTTLE` of it — clears the flag and re-arms. The cost of a false positive is one extra render;
+   the cost of the old assumption failing was the feature. Pinned by
+   `test_throttle_recovers_from_a_booking_destroyed_behind_its_back`, which destroys a booking with
+   `timer_stopall()` and asserts a later change still renders.
+6. **The tabpage and buffer current when a render is booked are still current when it fires** — *assumed,
+   documented rather than fixed.* `throttle_fire` re-checks nothing itself; `update_preview_fn` applies
+   its own `is_time_tracking_file` and `preview_is_open()` guards against whatever is current at fire
+   time, and `preview_is_open()` is scoped to the **current tabpage** (see `preview_win_in_current_tab`).
+   So switching tabpage — or switching to a non-tracking buffer — inside an open throttle window sends
+   the booked fire straight into that guard, and it renders nothing: the previous buffer's preview stays
+   stale until its next change. This is identical to the behaviour of the debounce this replaced, and it
+   is self-healing — by the time that buffer is edited again more than `THROTTLE` has almost always
+   elapsed, so the change takes the leading edge and renders at once. Recorded here rather than fixed:
+   re-targeting a booked render at the buffer it was booked for would mean capturing and revalidating a
+   buffer handle across the timer, for a window that closes on its own within 200ms.
 
 ## Test plan
 
