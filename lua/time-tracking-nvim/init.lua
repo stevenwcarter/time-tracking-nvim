@@ -161,51 +161,32 @@ local function write_binary_version(version)
 	return success
 end
 
+-- Parse a semantic version into numeric parts, tolerating a leading "v".
+local function parse_semver(s)
+	s = s:gsub("^v", "")
+	local parts = {}
+	for part in s:gmatch("([^%.]+)") do
+		table.insert(parts, tonumber(part) or 0)
+	end
+	return parts
+end
+
 -- Compare version strings (basic semver comparison)
 local function is_version_newer(current, new)
 	if not current or not new then
 		return true -- Assume newer if we can't compare
 	end
-	
-	-- Remove 'v' prefix if present
-	current = current:gsub("^v", "")
-	new = new:gsub("^v", "")
-	
-	if current == new then
-		return false
-	end
-	
-	-- Simple string comparison for now (works for semver)
-	-- This handles cases like "0.1.2" vs "0.1.3" correctly
-	local current_parts = {}
-	local new_parts = {}
-	
-	for part in current:gmatch("([^%.]+)") do
-		table.insert(current_parts, tonumber(part) or 0)
-	end
-	
-	for part in new:gmatch("([^%.]+)") do
-		table.insert(new_parts, tonumber(part) or 0)
-	end
-	
-	-- Pad shorter version with zeros
-	local max_len = math.max(#current_parts, #new_parts)
-	for i = #current_parts + 1, max_len do
-		current_parts[i] = 0
-	end
-	for i = #new_parts + 1, max_len do
-		new_parts[i] = 0
-	end
-	
-	-- Compare each part
-	for i = 1, max_len do
-		if new_parts[i] > current_parts[i] then
-			return true
-		elseif new_parts[i] < current_parts[i] then
-			return false
+
+	local current_parts = parse_semver(current)
+	local new_parts = parse_semver(new)
+
+	for i = 1, math.max(#current_parts, #new_parts) do
+		local a, b = current_parts[i] or 0, new_parts[i] or 0
+		if a ~= b then
+			return b > a
 		end
 	end
-	
+
 	return false -- Versions are equal
 end
 
