@@ -381,36 +381,65 @@ fn test_create_or_update_preview_buffer_options() {
     assert!(!swapfile, "Preview buffer should not use swapfile");
 }
 
+// Pins Invariant #1 of the tidy spec: the seven `TimeTracking*` command names
+// are the plugin's public API and must survive byte-identical. `src/lib.rs`
+// registers six of them from a `(name, desc, handler)` data table, where a
+// name/handler transposition is a one-line typo.
+//
+// Deliberately NOT `:command {name}`, which this test used to run through
+// `api::exec2`. `:command` is a *listing* command: it succeeds with "No
+// user-defined commands found" whether or not anything matches, so the old
+// assertion held with zero commands registered. This reads the registry itself.
+//
+// Each name is checked with its `nargs` and with "a callback is bound", which is
+// as far as the registry can go towards the handler-binding gap: `nargs` pins
+// `TimeTrackingMaybeCloseIfInvisible` as the only one of the seven taking an
+// argument, so it catches any transposition involving it, and the callback check
+// catches a name registered with no handler at all. Transposing two of the six
+// nargs=0 handlers inside the data table stays invisible here — the behavioural
+// tests elsewhere in this file are what cover that.
 #[nvim_oxi::test]
 fn test_time_tracking_with_config_creates_commands() {
     let (config, _temp_dir) = create_test_config_with_temp_dir();
-    
+
     // Use Box::leak to create a static reference for the lifetime requirement
     let config_static: &'static Config = Box::leak(Box::new(config));
-    
+
     // Call the function
     let result = time_tracking_with_config(config_static);
     assert!(result.is_ok(), "Should successfully create commands: {:?}", result);
-    
-    // Verify commands were created by trying to execute them
-    // Note: We can't easily test the command functionality without more complex setup,
-    // but we can verify they exist by checking if they're callable
-    
-    let commands_to_test = vec![
-        "TimeTrackingToggle",
-        "TimeTrackingUpdate", 
-        "TimeTrackingAutoOpen",
-        "TimeTrackingAutoClose",
-        "TimeTrackingClose",
-        "TimeTrackingMaybeCloseIfInvisible",
-        "TimeTrackingUpdateDebounced",
+
+    // `nvim_get_commands` is read through `luaeval` rather than
+    // `api::get_commands`: nvim-oxi's typed wrapper deserializes *every* entry
+    // in the registry, and Neovim's own runtime ships `:EditQuery`, whose
+    // `complete` is a Lua function where `CommandInfos::complete` is an
+    // `Option<String>` — so the typed call fails before it reaches ours.
+    const PROBE: &str = "luaeval('(function() \
+        local out = {} \
+        for name, c in pairs(vim.api.nvim_get_commands({ builtin = false })) do \
+        if name:sub(1, 12) == \"TimeTracking\" then \
+        out[#out + 1] = name .. \" nargs=\" .. tostring(c.nargs) .. \" handler=\" .. tostring(c.callback ~= nil) \
+        end end \
+        table.sort(out) \
+        return out end)()')";
+
+    let registered: Vec<String> = api::eval(PROBE).unwrap();
+
+    let expected = vec![
+        "TimeTrackingAutoClose nargs=0 handler=true".to_string(),
+        "TimeTrackingAutoOpen nargs=0 handler=true".to_string(),
+        "TimeTrackingClose nargs=0 handler=true".to_string(),
+        "TimeTrackingMaybeCloseIfInvisible nargs=? handler=true".to_string(),
+        "TimeTrackingToggle nargs=0 handler=true".to_string(),
+        "TimeTrackingUpdate nargs=0 handler=true".to_string(),
+        "TimeTrackingUpdateDebounced nargs=0 handler=true".to_string(),
     ];
-    
-    for cmd in commands_to_test {
-        // Try to get information about the command - this will fail if command doesn't exist
-        let cmd_info_result = api::exec2(&format!("command {}", cmd), &Default::default());
-        assert!(cmd_info_result.is_ok(), "Command {} should exist", cmd);
-    }
+
+    assert_eq!(
+        registered, expected,
+        "exactly these seven TimeTracking* commands, with these argument counts, \
+         must be registered and bound to a handler"
+    );
 }
 
 #[nvim_oxi::test]
