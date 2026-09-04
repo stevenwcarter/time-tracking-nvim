@@ -43,8 +43,8 @@ macro_rules! log_info {
 
 /// Writes a formatted message to Neovim's error output, via `api::err_writeln`.
 ///
-/// That is an API call, so this must not be reached from a fast event context —
-/// a libuv timer callback, say. Use `debug_log!` there.
+/// That is an API call, so this must not be reached from a fast event context,
+/// where calling the Neovim API is illegal. Use `debug_log!` there instead.
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
@@ -56,7 +56,7 @@ macro_rules! log_error {
 /// set in the environment.
 ///
 /// Touches no Neovim API, which is why it is usable where `log_error!` is not:
-/// during plugin load, and from libuv's fast event context.
+/// during plugin load and from a fast event context, before the API is usable.
 #[macro_export]
 macro_rules! debug_log {
     ($($arg:tt)*) => {

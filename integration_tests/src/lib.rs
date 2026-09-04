@@ -1171,7 +1171,7 @@ fn test_throttled_update_coalesces_a_burst() {
 
     assert!(
         elapsed.as_millis() < 100,
-        "20 throttled updates took {:?}; the debounce must not block the \
+        "20 throttled updates took {:?}; the throttle must not block the \
          event loop",
         elapsed
     );
@@ -1309,6 +1309,84 @@ fn test_throttled_update_renders_the_trailing_change() {
         !preview_text(&preview).contains("PLACEHOLDER"),
         "the booked trailing render must land, so a burst never leaves the \
          preview stale; it still reads {:?}",
+        preview_text(&preview)
+    );
+}
+
+#[nvim_oxi::test]
+fn test_throttled_trailing_render_lands_during_insert_mode() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    // The trailing render arrives through `:TimeTrackingThrottleFire`, so the
+    // commands must exist or the timer fires into E492.
+    time_tracking_with_config(config_static).unwrap();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    // Burn the leading edge, then re-prime the sentinel so only a *second*,
+    // trailing render can clear it.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    create_or_update_preview("PLACEHOLDER").unwrap();
+
+    // Book the trailing render, exactly as in
+    // `test_throttled_update_renders_the_trailing_change`. The difference is
+    // how the event loop gets turned below.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    // Every other throttle test turns the event loop from Normal mode, but
+    // the plugin's real trigger is `TextChangedI`, which fires while the user
+    // is in Insert mode. A `<Cmd>` mapping runs without leaving Insert mode,
+    // so a `vim.wait` invoked through it spins the event loop while `mode()`
+    // is still `i` — that is what lets `timer_start`'s callback (and so the
+    // booked render) fire here. Written to a temp file and `luafile`-d,
+    // rather than nested inline through `api::exec2`, because this is a
+    // Vim-command string containing Lua, itself embedded in Lua, and that is
+    // one quoting level too many to stay readable inline.
+    let handle = preview.handle();
+    let script = temp_dir.path().join("wait_in_insert_mode.lua");
+    fs::write(
+        &script,
+        format!(
+            "vim.g.tt_mode_during_wait = 'unset'\n\
+             local keys = 'ihello' .. vim.api.nvim_replace_termcodes(\
+             '<Cmd>lua vim.g.tt_mode_during_wait = vim.fn.mode(); vim.wait(2000, function() \
+             local l = vim.api.nvim_buf_get_lines({handle}, 0, 1, false)[1] or \"\" \
+             return not l:find(\"PLACEHOLDER\", 1, true) \
+             end, 10)<CR><Esc>', true, false, true)\n\
+             vim.fn.feedkeys(keys, 'x')\n"
+        ),
+    )
+    .unwrap();
+    api::exec2(
+        &format!("luafile {}", script.display()),
+        &Default::default(),
+    )
+    .unwrap();
+
+    // Recorded from *inside* the `<Cmd>` mapping, not inferred afterward —
+    // without this the test could silently degrade into another
+    // Normal-mode test if the technique above ever stopped working.
+    let mode_during_wait: String = api::get_var("tt_mode_during_wait").unwrap();
+    assert_eq!(
+        mode_during_wait, "i",
+        "the wait must run while genuinely in Insert mode; got mode {:?}",
+        mode_during_wait
+    );
+
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "the booked trailing render must land while the buffer is being \
+         edited in Insert mode; the preview still reads {:?}",
         preview_text(&preview)
     );
 }
