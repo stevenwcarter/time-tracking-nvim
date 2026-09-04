@@ -1,8 +1,10 @@
 use super::*;
 
 use std::cell::RefCell;
+#[cfg(not(windows))]
 use std::time::Duration;
 
+#[cfg(not(windows))]
 use nvim_oxi::libuv::TimerHandle;
 
 thread_local! {
@@ -98,8 +100,10 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
 }
 
 /// Trailing-edge debounce interval for autocommand-driven updates.
+#[cfg(not(windows))]
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+#[cfg(not(windows))]
 thread_local! {
     /// In-flight debounce timer, if any.
     ///
@@ -137,6 +141,7 @@ thread_local! {
 /// `:TimeTrackingUpdate` deliberately still calls [`update_preview_fn`]
 /// directly: a user who types the command expects to see the result, not to
 /// wait out the debounce window.
+#[cfg(not(windows))]
 pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
     // Arm nothing for a buffer that can never render a preview. The
     // autocommand fires for every `*.md` buffer, not just tracking notes, and
@@ -180,6 +185,25 @@ pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
 
     PENDING_UPDATE.with(|cell| *cell.borrow_mut() = Some(timer));
     Ok(())
+}
+
+/// Windows counterpart to [`update_preview_debounced`]: renders immediately.
+///
+/// The debounce needs nvim-oxi's `libuv` feature, which cannot work on Windows.
+/// Its `uv_*` externs carry no `raw-dylib` link attribute — the mechanism every
+/// other nvim-oxi FFI module uses to import from the host — so an MSVC build has
+/// nothing to resolve them against and fails with `LNK2019`. Annotating them
+/// would only move the failure to load time: the official v0.12.5 distribution
+/// exports 5710 symbols from `nvim.exe` and zero `uv_*`, and `lua51.dll` exports
+/// none either, so the symbols are simply absent.
+///
+/// Windows therefore keeps the pre-debounce behaviour — one render per keystroke.
+/// That is what every platform did before B3, so this is a missing optimisation,
+/// not a regression. The tracking-file guard still applies, so non-tracking `*.md`
+/// buffers cost nothing beyond the check itself.
+#[cfg(windows)]
+pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
+    update_preview_fn(config)
 }
 
 pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {

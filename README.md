@@ -125,6 +125,12 @@ This plugin integrates with [time-tracking-cli](https://github.com/stevenwcarter
   - macOS (Intel and Apple Silicon)
   - Windows x86_64
 
+On Linux and macOS, live preview updates are debounced: a burst of typing costs
+one render at the end of the burst. Windows renders on every keystroke instead —
+the debounce is built on nvim-oxi's `libuv` bindings, whose `uv_*` symbols the
+official Neovim Windows build does not export, so they cannot be linked there.
+Everything else behaves identically.
+
 ## Troubleshooting
 
 Start here:

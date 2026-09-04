@@ -1108,6 +1108,9 @@ fn test_explicit_update_renders_immediately() {
     );
 }
 
+// Debounce-specific: Windows has no libuv timer, so the autocommand path
+// renders synchronously there (see `update_preview_debounced`).
+#[cfg(not(windows))]
 #[nvim_oxi::test]
 fn test_debounced_update_returns_without_blocking() {
     use std::time::Instant;
@@ -1231,6 +1234,9 @@ fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
     );
 }
 
+// Debounce-specific: Windows has no libuv timer, so the autocommand path
+// renders synchronously there (see `update_preview_debounced`).
+#[cfg(not(windows))]
 #[nvim_oxi::test]
 fn test_autocommand_is_debounced_but_explicit_command_is_not() {
     cleanup_preview_buffers();
