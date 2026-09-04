@@ -15,7 +15,10 @@ function M.check()
 	local internal = tt._internal or {}
 
 	-- Platform
-	local platform_info, platform_err = internal.get_platform_info and internal.get_platform_info()
+	local platform_info, platform_err
+	if internal.get_platform_info then
+		platform_info, platform_err = internal.get_platform_info()
+	end
 	if not platform_info then
 		health.error("Unsupported platform: " .. tostring(platform_err), {
 			"Supported: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64",
@@ -38,7 +41,10 @@ function M.check()
 
 	local stat = uv.fs_stat(binary_path)
 	if not stat then
-		health.error("Cannot stat " .. binary_path)
+		health.error("Cannot stat " .. binary_path, {
+			"Check the file's permissions",
+			"Re-run :lua require('time-tracking-nvim').download()",
+		})
 		return
 	end
 	health.ok(string.format("Native library: %s (%d bytes)", binary_path, stat.size))
@@ -93,7 +99,10 @@ function M.check()
 	if vim.fn.exists(":TimeTrackingToggle") == 2 then
 		health.ok("Commands are registered")
 	else
-		health.error("Commands are not registered (:TimeTrackingToggle is missing)")
+		health.error("Commands are not registered (:TimeTrackingToggle is missing)", {
+			"Make sure require('time-tracking-nvim').setup() has run",
+			"Check the native module load result above for a failed load",
+		})
 	end
 
 	-- External tools used by auto-download
