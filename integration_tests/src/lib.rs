@@ -1230,3 +1230,47 @@ fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
         "a markdown buffer outside the data directory must never render a preview"
     );
 }
+
+#[nvim_oxi::test]
+fn test_autocommand_is_debounced_but_explicit_command_is_not() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    // Open the preview holding a sentinel before registering the augroup, so
+    // no BufEnter handler runs during setup.
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    // Register the augroup, including `TextChanged,TextChangedI *.md`.
+    time_tracking_with_config(config_static).unwrap();
+
+    // The four direct-call tests all bypass the autocommand, so nothing else
+    // pins which command it is wired to. Fire the real event instead.
+    let tick_before = preview.get_changedtick().unwrap();
+    api::exec2("doautocmd TextChanged", &Default::default()).unwrap();
+
+    // No event-loop turn happens here, so an autocommand still bound to the
+    // undebounced `TimeTrackingUpdate` would already have rewritten the
+    // preview.
+    assert_eq!(
+        preview.get_changedtick().unwrap(),
+        tick_before,
+        "the TextChanged autocommand must go through the debounce"
+    );
+
+    // The converse: collapsing both commands onto the debounced path would
+    // satisfy the assertion above, so pin that `:TimeTrackingUpdate` is still
+    // wired to the undebounced function.
+    api::command("TimeTrackingUpdate").unwrap();
+    assert!(
+        preview.get_changedtick().unwrap() > tick_before,
+        "the explicit :TimeTrackingUpdate command must still render at once"
+    );
+}

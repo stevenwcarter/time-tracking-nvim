@@ -107,6 +107,12 @@ thread_local! {
     /// fresh handle, with no `&mut self` way to re-arm an existing one. The
     /// real fix is `impl Drop for Handle` upstream.
     ///
+    /// If that lands, move the `= None` below **out** of the timer callback:
+    /// clearing the cell there would drop — and then free — the `uv_timer_t`
+    /// while `TimerHandle::once`'s own wrapper still holds the same pointer and
+    /// is about to call `timer.stop()` on it (`crates/libuv/src/timer.rs:78-82`),
+    /// which is a use-after-free. Clear it after the callback returns instead.
+    ///
     /// What bounds the leak is the tracking-file guard at the top of
     /// [`update_preview_debounced`]: the autocommand fires for *every* `*.md`
     /// buffer, so without that guard editing a README would leak on every
@@ -147,10 +153,19 @@ pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
     // The libuv callback runs in Neovim's fast event context, where the API is
     // off limits (`E5560: nvim_buf_set_lines must not be called in a fast
     // event context`), so hand the render back to the main loop.
+    //
+    // The render must be wrapped in `catch_nvim_panic`, as the other
+    // `schedule` body in `lib.rs` is. Before the debounce, the autocommand ran
+    // `TimeTrackingUpdate`, whose `Function::from_fn` caught panics for us; now
+    // the command's wrapper has long returned by the time this runs. The
+    // formatter parses half-typed markdown on every pause in typing, and a
+    // panic escaping here would unwind out of nvim-oxi's `extern "C"` Lua
+    // trampoline — aborting Neovim with unsaved buffers rather than printing a
+    // message.
     let timer = TimerHandle::once(DEBOUNCE, move || {
         PENDING_UPDATE.with(|cell| *cell.borrow_mut() = None);
         schedule(move |()| {
-            if let Err(e) = update_preview_fn(config) {
+            if let Err(e) = catch_nvim_panic(|| update_preview_fn(config)) {
                 log_error!("[time-tracking-nvim] debounced update failed: {}", e);
             }
         });
