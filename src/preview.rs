@@ -349,7 +349,8 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
     // If not, create a vertical split and attach the preview buffer to it
     if !is_open {
         // Capture the window we are about to split, before the split halves it.
-        let source_width = api::get_current_win().get_width().unwrap_or(u32::MAX);
+        let origin = api::get_current_win();
+        let source_width = origin.get_width().unwrap_or(u32::MAX);
 
         // Below ~40 columns the vsplit fails outright with E36 and wrecks the
         // layout on the way. No preview is a better outcome than a broken one.
@@ -430,8 +431,17 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
             }
         }
 
-        // Return to the previous window
-        let _ = api::command("wincmd p");
+        // Restore focus by handle rather than `wincmd p`: the split has already
+        // repointed Vim's previous-window pointer, so `wincmd p` only lands
+        // correctly by accident — and it overwrites the user's own previous-window
+        // target on the way. This changes where the cursor ends up, so a failure
+        // is user-visible and warrants more than a debug line.
+        if let Err(e) = api::set_current_win(&origin) {
+            log_error!(
+                "[time-tracking-nvim] could not return focus after opening the preview: {}",
+                e
+            );
+        }
     }
 
     Ok(())
