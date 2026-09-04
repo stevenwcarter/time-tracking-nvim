@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::utils::{PREVIEW_BUF_NAME, is_preview_buf};
 use std::cell::RefCell;
 #[cfg(not(windows))]
 use std::time::Duration;
@@ -83,10 +84,7 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
         None => {
             let mut found = None;
             for b in api::list_bufs() {
-                if b.get_name()?
-                    .to_str()
-                    .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-                {
+                if is_preview_buf(&b)? {
                     found = Some(b);
                     break;
                 }
@@ -300,7 +298,7 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
 /// Create the scratch buffer that backs the preview, and prime both caches.
 fn create_preview_buffer() -> Result<Buffer> {
     let mut b = api::create_buf(false, true)?; // listed=false, scratch=true
-    b.set_name("[Time Tracking Preview]")?;
+    b.set_name(PREVIEW_BUF_NAME)?;
 
     // Keep it unlisted and non-modifiable by default (DO NOT set 'readonly')
     let bopts = OptionOptsBuilder::default().buf(b.clone()).build();

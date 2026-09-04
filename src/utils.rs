@@ -176,6 +176,20 @@ pub fn get_buffer_content() -> Result<String> {
     Ok(content)
 }
 
+/// Name given to the preview scratch buffer.
+///
+/// Neovim reports buffer names as absolute paths, so every consumer matches on
+/// the *suffix*, never equality.
+pub const PREVIEW_BUF_NAME: &str = "[Time Tracking Preview]";
+
+/// Is `buf` the preview buffer?
+pub fn is_preview_buf(buf: &Buffer) -> Result<bool> {
+    Ok(buf
+        .get_name()?
+        .to_str()
+        .is_ok_and(|s| s.ends_with(PREVIEW_BUF_NAME)))
+}
+
 /// Is any window showing a time-tracking file?
 ///
 /// `exclude_win` skips one window by handle. `WinClosed` fires *before* the
@@ -188,13 +202,9 @@ pub fn any_tracking_visible(config: &Config, exclude_win: Option<i32>) -> Result
         }
 
         let buf = win.get_buf()?;
-        let name = buf.get_name()?;
 
         // Skip the preview itself
-        if name
-            .to_str()
-            .is_ok_and(|s| s.ends_with("[Time Tracking Preview]"))
-        {
+        if is_preview_buf(&buf)? {
             continue;
         }
 
