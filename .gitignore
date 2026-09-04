@@ -5,3 +5,7 @@ Cargo.lock
 *~
 .DS_Store
 *.log
+lua/*.so
+lua/*.dylib
+lua/*.dll
+lua/*.version

@@ -30,8 +30,12 @@ cargo build --release
 2. Add to your Neovim config (temporarily):
    ```lua
    vim.opt.runtimepath:append("/path/to/time-tracking-nvim")
-   require("time-tracking-nvim").setup()
+   require("time-tracking-nvim").setup({ auto_download = false, auto_update = false })
    ```
+   With the defaults, a missing binary at the expected path triggers a
+   download of the published release, so leaving `auto_download`/`auto_update`
+   enabled here would silently replace your local build with upstream's and
+   you would end up testing the wrong binary.
 
 3. Test the commands:
    ```
