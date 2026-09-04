@@ -262,6 +262,19 @@ end
 -- string-matched — a tampered response pointing at any host would be fetched
 -- and dlopen'd. Anchored patterns, so a host merely *containing* a trusted
 -- name (github.com.evil.example) does not pass.
+--
+-- The two branches differ in how tight that containment is: the github.com
+-- branch is anchored to this repo's own path, but the *.githubusercontent.com
+-- branch accepts *any* host under that suffix with *any* path — e.g.
+-- raw.githubusercontent.com/<anyone>/<anything> passes, not just assets for
+-- this repo. That is acceptable only because this URL is never
+-- attacker-supplied directly: it comes out of GitHub's own release API
+-- response for this repo, and the only way to smuggle a different host past
+-- the github.com branch is to already control that API response — at which
+-- point the attacker could equally point browser_download_url at
+-- objects.githubusercontent.com for their own malicious asset. This is not a
+-- general-purpose "is this URL safe" check and must not be reused as one
+-- without tightening the second branch.
 local function is_trusted_download_url(url)
 	if type(url) ~= "string" then
 		return false
