@@ -1280,3 +1280,95 @@ fn test_autocommand_is_debounced_but_explicit_command_is_not() {
         "the explicit :TimeTrackingUpdate command must still render at once"
     );
 }
+
+/// Whether the given tabpage has a window showing the preview buffer.
+fn tab_shows_preview(tab: &nvim_oxi::api::TabPage) -> bool {
+    tab.list_wins().unwrap().any(|w| {
+        w.get_buf()
+            .and_then(|b| b.get_name())
+            .map(|n| n.to_str().is_ok_and(|s| s.ends_with("[Time Tracking Preview]")))
+            .unwrap_or(false)
+    })
+}
+
+// B45 regression guard: `find_preview` used to scan `api::list_wins()`, which
+// enumerates every tabpage. A preview open in tab 1 made that scan conclude a
+// preview was "already open" for tab 2 as well, so auto-open opened nothing
+// there — the second tab's edits rendered into a buffer only visible back in
+// tab 1.
+#[nvim_oxi::test]
+fn test_auto_open_gives_a_second_tabpage_its_own_preview_window() {
+    cleanup_preview_buffers();
+    api::command("only").unwrap();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    // Tab 1: open a tracking file and let auto-open create its preview split.
+    let md1 = create_test_file(temp_dir.path(), "tab1.md", "# Tab 1");
+    let mut buf1 = api::create_buf(false, false).unwrap();
+    buf1.set_name(&md1).unwrap();
+    api::set_current_buf(&buf1).unwrap();
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+
+    let tab1 = api::get_current_tabpage();
+    assert_eq!(
+        tab1.list_wins().unwrap().count(),
+        2,
+        "precondition: tab 1 must have its own source + preview windows"
+    );
+    assert!(
+        tab_shows_preview(&tab1),
+        "precondition: tab 1's preview window must be showing the preview buffer"
+    );
+
+    // Tab 2: a fresh tabpage with its own tracking-file window. The preview
+    // buffer already exists (it's global), but no window in this tabpage
+    // shows it yet.
+    api::command("tabnew").unwrap();
+    let tab2 = api::get_current_tabpage();
+    assert_ne!(
+        tab1, tab2,
+        "precondition: :tabnew must produce a distinct tabpage from tab 1"
+    );
+
+    let md2 = create_test_file(temp_dir.path(), "tab2.md", "# Tab 2");
+    let mut buf2 = api::create_buf(false, false).unwrap();
+    buf2.set_name(&md2).unwrap();
+    api::set_current_buf(&buf2).unwrap();
+
+    assert_eq!(
+        tab2.list_wins().unwrap().count(),
+        1,
+        "precondition: tab 2 starts with only its source window"
+    );
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+
+    // The bug: this used to no-op, because tab 1's preview window made the
+    // (untabbed) visibility scan report a preview as already open.
+    assert_eq!(
+        tab2.list_wins().unwrap().count(),
+        2,
+        "tab 2 must get its own preview window rather than being told tab 1's \
+         counts as already open"
+    );
+    assert!(
+        tab_shows_preview(&tab2),
+        "tab 2 must show a window on the (shared) preview buffer"
+    );
+
+    // Tab 1's preview window must be untouched by tab 2's auto-open.
+    assert_eq!(
+        tab1.list_wins().unwrap().count(),
+        2,
+        "tab 1's own preview window must survive opening tab 2's"
+    );
+
+    // Clean up: close tab 2 and collapse tab 1 back to one window, so later
+    // tests in this shared Neovim instance do not inherit an extra tabpage.
+    api::command("tabclose").unwrap();
+    api::command("only").unwrap();
+    cleanup_preview_buffers();
+}
