@@ -158,6 +158,25 @@ fn init_failure_dict(msg: &str) -> Dictionary {
 /// it, so the integration tests can drive it with a `Config` pointed at a
 /// temporary directory.
 pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> {
+    register_commands(config)?;
+    register_autocommands()?;
+
+    // Scheduled to delay until startup is complete
+    schedule(|_| {
+        catch_nvim_panic(|| {
+            api::command("TimeTrackingAutoOpen").map_err(|e| {
+                log_error!("Issue running auto-open on start-up {:?}", e);
+                nvim_oxi::Error::Api(e)
+            })
+        })
+    });
+
+    let api = Dictionary::new();
+    Ok(api)
+}
+
+/// Register the `TimeTracking*` user commands.
+fn register_commands(config: &'static Config) -> Result<()> {
     let toggle_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| toggle_preview_fn(config)));
 
@@ -197,47 +216,63 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         "TimeTrackingMaybeCloseIfInvisible",
         maybe_close_if_invisible,
         &CreateCommandOpts::builder()
+            .desc("(internal) Close the preview when no tracking file is visible")
             .nargs(CommandNArgs::ZeroOrOne)
             .build(),
     )?;
 
-    api::create_user_command(
-        "TimeTrackingToggle",
-        toggle_preview,
-        &CreateCommandOpts::builder().build(),
-    )?;
+    // Name, description, handler. The description is what `:command
+    // TimeTracking<Tab>` and which-key/telescope pickers show; without it all
+    // six rendered as a blank column and were indistinguishable.
+    for (name, desc, func) in [
+        (
+            "TimeTrackingToggle",
+            "Toggle the time-tracking preview split",
+            toggle_preview,
+        ),
+        (
+            "TimeTrackingUpdate",
+            "Re-render the time-tracking preview now",
+            update_preview,
+        ),
+        (
+            "TimeTrackingUpdateDebounced",
+            "Re-render the preview, coalescing a burst of keystrokes",
+            update_preview_debounced_cmd,
+        ),
+        (
+            "TimeTrackingAutoOpen",
+            "Open the preview if the current buffer is a tracking file",
+            auto_open,
+        ),
+        (
+            "TimeTrackingAutoClose",
+            "Close the time-tracking preview",
+            auto_close,
+        ),
+        (
+            "TimeTrackingClose",
+            "Close the time-tracking preview split",
+            close_preview_cmd,
+        ),
+    ] {
+        api::create_user_command(
+            name,
+            func,
+            &CreateCommandOpts::builder()
+                .desc(desc)
+                .nargs(CommandNArgs::Zero)
+                .build(),
+        )?;
+    }
 
-    api::create_user_command(
-        "TimeTrackingUpdate",
-        update_preview,
-        &CreateCommandOpts::builder().build(),
-    )?;
+    Ok(())
+}
 
-    api::create_user_command(
-        "TimeTrackingUpdateDebounced",
-        update_preview_debounced_cmd,
-        &CreateCommandOpts::builder().build(),
-    )?;
-
-    api::create_user_command(
-        "TimeTrackingAutoOpen",
-        auto_open,
-        &CreateCommandOpts::builder().build(),
-    )?;
-
-    api::create_user_command(
-        "TimeTrackingAutoClose",
-        auto_close,
-        &CreateCommandOpts::builder().build(),
-    )?;
-
-    api::create_user_command(
-        "TimeTrackingClose",
-        close_preview_cmd,
-        &CreateCommandOpts::builder().build(),
-    )?;
-
-    // Register autocommands via Vimscript to avoid nvim-oxi keyset mask mismatch on 0.12.2+
+/// Register the `TimeTrackingNvim` autocommand group.
+///
+/// Issued as Vimscript to avoid an nvim-oxi keyset mask mismatch on 0.12.2+.
+fn register_autocommands() -> Result<()> {
     api::command("augroup TimeTrackingNvim")?;
     api::command("autocmd!")?;
     api::command("autocmd BufEnter,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
@@ -247,17 +282,5 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
     api::command("autocmd QuitPre * TimeTrackingClose")?;
     api::command("augroup END")?;
-
-    // Scheduled to delay until startup is complete
-    schedule(|_| {
-        catch_nvim_panic(|| {
-            api::command("TimeTrackingAutoOpen").map_err(|e| {
-                log_error!("Issue running auto-open on start-up {:?}", e);
-                nvim_oxi::Error::Api(e)
-            })
-        })
-    });
-
-    let api = Dictionary::new();
-    Ok(api)
+    Ok(())
 }
