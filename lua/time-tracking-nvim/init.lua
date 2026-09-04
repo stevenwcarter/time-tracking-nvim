@@ -19,7 +19,7 @@ local function echo(chunks, opts)
 end
 
 -- Plugin version (should match Cargo.toml)
-local PLUGIN_VERSION = "0.2.0"
+local PLUGIN_VERSION = "0.2.1"
 
 local REPO = "stevenwcarter/time-tracking-nvim"
 local RELEASES_URL = "https://github.com/" .. REPO .. "/releases"
@@ -142,7 +142,7 @@ local function read_binary_version()
 	if not version_file or vim.fn.filereadable(version_file) ~= 1 then
 		return nil
 	end
-	
+
 	local content = vim.fn.readfile(version_file)
 	if #content > 0 then
 		return vim.trim(content[1])
@@ -156,12 +156,12 @@ local function write_binary_version(version)
 	if not version_file then
 		return false
 	end
-	
+
 	-- Ensure directory exists
 	local dir = vim.fs.dirname(version_file)
 	vim.fn.mkdir(dir, "p")
-	
-	local success = pcall(vim.fn.writefile, {version}, version_file)
+
+	local success = pcall(vim.fn.writefile, { version }, version_file)
 	return success
 end
 
@@ -670,8 +670,7 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	-- no version was requested: previously this always fetched /latest and then
 	-- recorded expected_version, so the .version file was an assertion about
 	-- what we wanted rather than an observation of what we got.
-	local release_url = expected_version and (API_BASE .. "/tags/v" .. expected_version)
-		or (API_BASE .. "/latest")
+	local release_url = expected_version and (API_BASE .. "/tags/v" .. expected_version) or (API_BASE .. "/latest")
 
 	fetch_release(release_url, function(release_info, release_err)
 		if release_err then
@@ -808,27 +807,30 @@ end
 local function have_download_tools(fatal)
 	if vim.fn.executable("curl") ~= 1 then
 		if not fatal then
-			return false, {
-				{ "time-tracking-nvim: ", "ErrorMsg" },
-				{ "curl is required for auto-update but not found", "Normal" },
-				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
-			}
+			return false,
+				{
+					{ "time-tracking-nvim: ", "ErrorMsg" },
+					{ "curl is required for auto-update but not found", "Normal" },
+					{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
+				}
 		end
-		return false, {
-			{ "time-tracking-nvim: ", "ErrorMsg" },
-			{ "curl is required for auto-download but not found", "Normal" },
-			{ "\nPlease install curl or download manually from: ", "Normal" },
-			{ RELEASES_URL, "Underlined" },
-		}
+		return false,
+			{
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "curl is required for auto-download but not found", "Normal" },
+				{ "\nPlease install curl or download manually from: ", "Normal" },
+				{ RELEASES_URL, "Underlined" },
+			}
 	end
 
 	if fatal and vim.fn.executable("tar") ~= 1 and vim.fn.executable("unzip") ~= 1 then
-		return false, {
-			{ "time-tracking-nvim: ", "ErrorMsg" },
-			{ "tar or unzip is required for auto-download but not found", "Normal" },
-			{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
-			{ RELEASES_URL, "Underlined" },
-		}
+		return false,
+			{
+				{ "time-tracking-nvim: ", "ErrorMsg" },
+				{ "tar or unzip is required for auto-download but not found", "Normal" },
+				{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
+				{ RELEASES_URL, "Underlined" },
+			}
 	end
 
 	return true
@@ -990,7 +992,7 @@ function M.setup(opts)
 		-- to, so a download that could not even be started ends setup here.
 		download_then_load(target, binary_path, config, install_labels(target, binary_path))
 		return
-	-- Handle version updates for existing binaries
+		-- Handle version updates for existing binaries
 	elseif needs_update and config.auto_download and config.auto_update then
 		if download_then_load(target, binary_path, config, update_labels(update_reason)) then
 			return
@@ -1011,9 +1013,7 @@ function M.setup(opts)
 		echo({
 			{ "time-tracking-nvim: ", "ErrorMsg" },
 			{
-				"binary not found at "
-					.. binary_path
-					.. ". Run :checkhealth time-tracking-nvim for detail.",
+				"binary not found at " .. binary_path .. ". Run :checkhealth time-tracking-nvim for detail.",
 				"Normal",
 			},
 		})
