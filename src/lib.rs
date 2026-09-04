@@ -23,14 +23,14 @@ use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_fi
 mod preview;
 pub mod utils;
 
-use preview::*;
 pub use preview::{
-    auto_open_preview, close_preview, create_or_update_preview, toggle_preview_fn,
-    update_preview_debounced, update_preview_fn,
+    auto_close_preview, auto_open_preview, close_preview, create_or_update_preview, throttle_fire,
+    toggle_preview_fn, update_preview_fn, update_preview_throttled,
 };
-// Test seam, not interface: see `preview::write_preview_contents_with`.
+// Test seams, not interface: see `preview::write_preview_contents_with` and
+// `preview::reset_throttle_for_test`.
 #[doc(hidden)]
-pub use preview::write_preview_contents_with;
+pub use preview::{reset_throttle_for_test, write_preview_contents_with};
 
 #[macro_export]
 macro_rules! log_info {
@@ -183,11 +183,16 @@ fn register_commands(config: &'static Config) -> Result<()> {
     let update_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| update_preview_fn(config)));
 
-    // Create command to update the preview from the TextChanged autocommands,
-    // coalescing a burst of keystrokes into a single render.
-    let update_preview_debounced_cmd = Function::from_fn(move |_: CommandArgs| {
-        catch_nvim_panic(|| update_preview_debounced(config))
+    // Update the preview from the TextChanged autocommands, at most once per
+    // throttle window.
+    let update_preview_throttled_cmd = Function::from_fn(move |_: CommandArgs| {
+        catch_nvim_panic(|| update_preview_throttled(config))
     });
+
+    // The render the throttle books with `timer_start`. Internal: that timer
+    // is its only caller.
+    let throttle_fire_cmd =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| throttle_fire(config)));
 
     let auto_open =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_open_preview(config)));
@@ -236,9 +241,14 @@ fn register_commands(config: &'static Config) -> Result<()> {
             update_preview,
         ),
         (
-            "TimeTrackingUpdateDebounced",
-            "Re-render the preview, coalescing a burst of keystrokes",
-            update_preview_debounced_cmd,
+            "TimeTrackingUpdateThrottled",
+            "(internal) Re-render the preview, at most once per throttle window",
+            update_preview_throttled_cmd,
+        ),
+        (
+            "TimeTrackingThrottleFire",
+            "(internal) Run the render the throttle booked",
+            throttle_fire_cmd,
         ),
         (
             "TimeTrackingAutoOpen",
@@ -282,7 +292,7 @@ fn register_autocommands() -> Result<()> {
     api::command("autocmd!")?;
     api::command("autocmd BufEnter,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
     api::command("autocmd WinClosed * TimeTrackingMaybeCloseIfInvisible <amatch>")?;
-    api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdateDebounced")?;
+    api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdateThrottled")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
     // NOT interpolating PREVIEW_BUF_NAME here on purpose: `:bwipeout` splits its
     // argument on whitespace and matches each piece as a regexp, so this never

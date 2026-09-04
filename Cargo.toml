@@ -23,22 +23,6 @@ name = "time_tracking_nvim"
 
 [dependencies]
 time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
-
-# The `libuv` feature backs the TextChanged debounce (see `update_preview_debounced`).
-# It is deliberately NOT enabled on Windows: nvim-oxi's libuv crate declares its
-# `uv_*` externs with no `raw-dylib` link attribute, unlike every other FFI module
-# in that project, so an MSVC build has nothing to import them from. Adding the
-# attribute would not help either — verified against the official v0.12.5
-# distribution, `nvim.exe` exports 5710 symbols and zero `uv_*`, and `lua51.dll`
-# exports none, so the symbols are unavailable at load time as well as link time.
-# Windows therefore renders on every keystroke, as it did before the debounce.
-[target.'cfg(not(windows))'.dependencies]
-nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
-    "neovim-0-12",
-    "libuv",
-] }
-
-[target.'cfg(windows)'.dependencies]
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
     "neovim-0-12",
 ] }

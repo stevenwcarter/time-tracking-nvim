@@ -510,7 +510,6 @@ source = "git+https://github.com/noib3/nvim-oxi?branch=main#7ad27a7d3c8a72c34e7b
 dependencies = [
  "mlua",
  "nvim-oxi-api",
- "nvim-oxi-libuv",
  "nvim-oxi-luajit",
  "nvim-oxi-macros",
  "nvim-oxi-types",
@@ -528,15 +527,6 @@ dependencies = [
  "nvim-oxi-types",
  "serde",
  "serde_repr",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "nvim-oxi-libuv"
-version = "0.6.0"
-source = "git+https://github.com/noib3/nvim-oxi?branch=main#7ad27a7d3c8a72c34e7b9914eb77fb0644ff3f65"
-dependencies = [
- "nvim-oxi-luajit",
  "thiserror 2.0.20",
 ]
 

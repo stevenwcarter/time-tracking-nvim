@@ -430,14 +430,15 @@ fn test_time_tracking_with_config_creates_commands() {
         "TimeTrackingAutoOpen nargs=0 handler=true".to_string(),
         "TimeTrackingClose nargs=0 handler=true".to_string(),
         "TimeTrackingMaybeCloseIfInvisible nargs=? handler=true".to_string(),
+        "TimeTrackingThrottleFire nargs=0 handler=true".to_string(),
         "TimeTrackingToggle nargs=0 handler=true".to_string(),
         "TimeTrackingUpdate nargs=0 handler=true".to_string(),
-        "TimeTrackingUpdateDebounced nargs=0 handler=true".to_string(),
+        "TimeTrackingUpdateThrottled nargs=0 handler=true".to_string(),
     ];
 
     assert_eq!(
         registered, expected,
-        "exactly these seven TimeTracking* commands, with these argument counts, \
+        "exactly these eight TimeTracking* commands, with these argument counts, \
          must be registered and bound to a handler"
     );
 }
@@ -1121,7 +1122,7 @@ fn test_explicit_update_renders_immediately() {
     let tick_before = preview.get_changedtick().unwrap();
 
     // :TimeTrackingUpdate must render synchronously — a user who types the
-    // command expects to see the result, not to wait out a debounce window.
+    // command expects to see the result, not to wait out a throttle window.
     // No event-loop turn happens between this call and the assertions, so a
     // debounced `update_preview_fn` would leave the sentinel in place.
     time_tracking_nvim::update_preview_fn(config_static).unwrap();
@@ -1133,15 +1134,12 @@ fn test_explicit_update_renders_immediately() {
     );
     assert!(
         !preview_text(&preview).contains("PLACEHOLDER"),
-        "an explicit update must not be deferred behind the debounce"
+        "an explicit update must not be deferred behind the throttle"
     );
 }
 
-// Debounce-specific: Windows has no libuv timer, so the autocommand path
-// renders synchronously there (see `update_preview_debounced`).
-#[cfg(not(windows))]
 #[nvim_oxi::test]
-fn test_debounced_update_returns_without_blocking() {
+fn test_throttled_update_coalesces_a_burst() {
     use std::time::Instant;
 
     cleanup_preview_buffers();
@@ -1155,20 +1153,25 @@ fn test_debounced_update_returns_without_blocking() {
     api::set_current_buf(&buf).unwrap();
 
     create_or_update_preview("PLACEHOLDER").unwrap();
+    time_tracking_with_config(config_static).unwrap();
     let preview = preview_buffer();
+
+    time_tracking_nvim::reset_throttle_for_test();
+    // Burn the leading edge, so the 20 calls below all land inside one window.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
     let tick_before = preview.get_changedtick().unwrap();
 
-    // Simulate a burst of keystrokes: each re-arms the timer and returns at
-    // once; none of them may block for the debounce interval.
+    // Simulate a burst of keystrokes inside one window: each is dropped and
+    // returns at once.
     let start = Instant::now();
     for _ in 0..20 {
-        time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+        time_tracking_nvim::update_preview_throttled(config_static).unwrap();
     }
     let elapsed = start.elapsed();
 
     assert!(
         elapsed.as_millis() < 100,
-        "20 debounced updates took {:?}; the debounce must not block the \
+        "20 throttled updates took {:?}; the debounce must not block the \
          event loop",
         elapsed
     );
@@ -1178,12 +1181,14 @@ fn test_debounced_update_returns_without_blocking() {
     assert_eq!(
         preview.get_changedtick().unwrap(),
         tick_before,
-        "the debounce must not render synchronously on each keystroke"
+        "changes inside an open throttle window must not render synchronously"
     );
+
+    api::command("call timer_stopall()").unwrap();
 }
 
 #[nvim_oxi::test]
-fn test_debounced_update_eventually_renders() {
+fn test_throttled_update_eventually_renders() {
     cleanup_preview_buffers();
 
     let (config, temp_dir) = create_test_config_with_temp_dir();
@@ -1197,7 +1202,7 @@ fn test_debounced_update_eventually_renders() {
     create_or_update_preview("PLACEHOLDER").unwrap();
     let preview = preview_buffer();
 
-    time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
 
     // Turn the event loop so the one-shot timer can fire and the render it
     // schedules can run. Without this the debounce would be indistinguishable
@@ -1223,7 +1228,7 @@ fn test_debounced_update_eventually_renders() {
 }
 
 #[nvim_oxi::test]
-fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
+fn test_throttled_update_renders_nothing_for_a_non_tracking_file() {
     cleanup_preview_buffers();
 
     let (config, temp_dir) = create_test_config_with_temp_dir();
@@ -1247,9 +1252,9 @@ fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
     untracked.set_name(&readme).unwrap();
     api::set_current_buf(&untracked).unwrap();
 
-    time_tracking_nvim::update_preview_debounced(config_static).unwrap();
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
 
-    // Turn the event loop well past the debounce window.
+    // Turn the event loop well past the throttle window.
     api::exec2(
         "lua vim.wait(600, function() return false end)",
         &Default::default(),
@@ -1263,11 +1268,58 @@ fn test_debounced_update_renders_nothing_for_a_non_tracking_file() {
     );
 }
 
-// Debounce-specific: Windows has no libuv timer, so the autocommand path
-// renders synchronously there (see `update_preview_debounced`).
-#[cfg(not(windows))]
 #[nvim_oxi::test]
-fn test_autocommand_is_debounced_but_explicit_command_is_not() {
+fn test_throttle_renders_repeatedly_during_sustained_typing() {
+    use std::time::{Duration, Instant};
+
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+
+    // Register the commands: the throttle books its trailing renders through
+    // `:TimeTrackingThrottleFire`. Done after the preview exists so no
+    // BufEnter handler runs during setup.
+    time_tracking_with_config(config_static).unwrap();
+
+    // Type continuously for ~600ms — three throttle windows — turning the
+    // event loop between keystrokes so booked renders get a chance to fire.
+    // Re-priming the sentinel each iteration makes each render countable
+    // without depending on what the formatter emits.
+    let mut renders = 0;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(600) {
+        create_or_update_preview("PLACEHOLDER").unwrap();
+        time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+        api::exec2(
+            "lua vim.wait(20, function() return false end)",
+            &Default::default(),
+        )
+        .unwrap();
+        if !preview_text(&preview).contains("PLACEHOLDER") {
+            renders += 1;
+        }
+    }
+
+    assert!(
+        renders >= 2,
+        "600ms of continuous typing must produce at least two renders \
+         (roughly one per 200ms window); got {renders}. A trailing-edge \
+         debounce produces none, because every keystroke pushes its deadline \
+         out again."
+    );
+}
+
+#[nvim_oxi::test]
+fn test_autocommand_is_throttled_but_explicit_command_is_not() {
     cleanup_preview_buffers();
 
     let (config, temp_dir) = create_test_config_with_temp_dir();
@@ -1286,26 +1338,33 @@ fn test_autocommand_is_debounced_but_explicit_command_is_not() {
     // Register the augroup, including `TextChanged,TextChangedI *.md`.
     time_tracking_with_config(config_static).unwrap();
 
-    // The four direct-call tests all bypass the autocommand, so nothing else
-    // pins which command it is wired to. Fire the real event instead.
-    let tick_before = preview.get_changedtick().unwrap();
-    api::exec2("doautocmd TextChanged", &Default::default()).unwrap();
+    time_tracking_nvim::reset_throttle_for_test();
 
-    // No event-loop turn happens here, so an autocommand still bound to the
-    // undebounced `TimeTrackingUpdate` would already have rewritten the
-    // preview.
-    assert_eq!(
-        preview.get_changedtick().unwrap(),
-        tick_before,
-        "the TextChanged autocommand must go through the debounce"
+    // The leading edge: the first TextChanged renders synchronously.
+    api::exec2("doautocmd TextChanged", &Default::default()).unwrap();
+    let tick_after_first = preview.get_changedtick().unwrap();
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "the first TextChanged must render at once"
     );
 
-    // The converse: collapsing both commands onto the debounced path would
-    // satisfy the assertion above, so pin that `:TimeTrackingUpdate` is still
-    // wired to the undebounced function.
+    // A second one inside the same window must not: it is booked instead.
+    // This is what pins the autocommand to `:TimeTrackingUpdateThrottled`
+    // rather than the unthrottled `:TimeTrackingUpdate`.
+    api::exec2("doautocmd TextChanged", &Default::default()).unwrap();
+    assert_eq!(
+        preview.get_changedtick().unwrap(),
+        tick_after_first,
+        "a TextChanged inside an open throttle window must go through the throttle"
+    );
+
+    // The converse: `:TimeTrackingUpdate` is not throttled, so it renders even
+    // inside the window. Re-prime the sentinel so the render is visible.
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let tick_before_explicit = preview.get_changedtick().unwrap();
     api::command("TimeTrackingUpdate").unwrap();
     assert!(
-        preview.get_changedtick().unwrap() > tick_before,
+        preview.get_changedtick().unwrap() > tick_before_explicit,
         "the explicit :TimeTrackingUpdate command must still render at once"
     );
 }

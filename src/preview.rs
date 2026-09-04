@@ -1,12 +1,8 @@
 use super::*;
 
 use crate::utils::{PREVIEW_BUF_NAME, is_preview_buf};
-use std::cell::RefCell;
-#[cfg(not(windows))]
-use std::time::Duration;
-
-#[cfg(not(windows))]
-use nvim_oxi::libuv::TimerHandle;
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 thread_local! {
     /// Cached handle to the preview buffer.
@@ -128,9 +124,12 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
     Ok(Some((buf, window)))
 }
 
-/// Trailing-edge debounce interval for autocommand-driven updates.
-#[cfg(not(windows))]
-const DEBOUNCE: Duration = Duration::from_millis(150);
+/// Minimum interval between autocommand-driven renders.
+///
+/// A *throttle*, not a debounce: the first change in a burst renders at once,
+/// and the rest render on this cadence, so the preview keeps up with
+/// continuous typing instead of waiting for the user to stop.
+const THROTTLE: Duration = Duration::from_millis(200);
 
 /// Below this width a vertical split fails outright with E36 and damages the
 /// layout on the way out, so no preview is the better outcome.
@@ -142,107 +141,139 @@ const PREVIEW_SCREEN_FRACTION: i64 = 3;
 /// Floor for the preview, and the minimum width left to the window it split from.
 const MIN_PREVIEW_COLUMNS: u32 = 20;
 
-#[cfg(not(windows))]
 thread_local! {
-    /// In-flight debounce timer, if any.
+    /// When the last throttle-path render happened.
     ///
-    /// Re-armed on each keystroke, so a burst of typing costs one render at
-    /// the end of the burst rather than one per character.
+    /// `None` until the first one, which is what lets the first change of a
+    /// session render immediately.
+    static LAST_RENDER: Cell<Option<Instant>> = const { Cell::new(None) };
+
+    /// Whether a render is already booked for the current throttle window.
     ///
-    /// **Every re-arm leaks ~200 bytes.** nvim-oxi's libuv binding allocates
-    /// the `uv_timer_t` with `alloc::alloc` and boxes the callback with
-    /// `Box::into_raw`, but `libuv::Handle` has no `Drop` impl, so dropping a
-    /// `TimerHandle` frees nothing. There is no local fix: `TimerHandle`
-    /// exposes `start`/`once` only as associated constructors that allocate a
-    /// fresh handle, with no `&mut self` way to re-arm an existing one. The
-    /// real fix is `impl Drop for Handle` upstream.
+    /// This flag is the entire difference between this and the debounce it
+    /// replaced. The debounce cancelled and re-armed its timer on every
+    /// keystroke, pushing the render out for as long as the user kept typing.
+    /// Here a booked render stays booked: later changes in the same window see
+    /// this set and return, and the booked render fires on the window
+    /// boundary.
     ///
-    /// If that lands, move the `= None` below **out** of the timer callback:
-    /// clearing the cell there would drop — and then free — the `uv_timer_t`
-    /// while `TimerHandle::once`'s own wrapper still holds the same pointer and
-    /// is about to call `timer.stop()` on it (`crates/libuv/src/timer.rs:78-82`),
-    /// which is a use-after-free. Clear it after the callback returns instead.
-    ///
-    /// What bounds the leak is the tracking-file guard at the top of
-    /// [`update_preview_debounced`]: the autocommand fires for *every* `*.md`
-    /// buffer, so without that guard editing a README would leak on every
-    /// keystroke too. Keep the guard.
-    static PENDING_UPDATE: RefCell<Option<TimerHandle>> = const { RefCell::new(None) };
+    /// Cleared by [`throttle_fire`], which the timer reaches through
+    /// `:TimeTrackingThrottleFire`. There is no cancellation path — a booked
+    /// timer always fires exactly once and always clears this — so the only
+    /// way it can stick is an arming failure, which
+    /// [`update_preview_throttled`] rolls back explicitly.
+    static THROTTLE_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Autocommand entry point: coalesce a burst of keystrokes into one render.
+/// Autocommand entry point: hold autocommand-driven renders to at most one per
+/// [`THROTTLE`].
 ///
 /// `TextChanged`/`TextChangedI` fire once per keystroke on Neovim's single UI
 /// thread, and each render pays canonicalize syscalls, a window scan, a
-/// full-buffer read, and a re-parse. Arming a one-shot timer instead keeps the
-/// per-keystroke cost to cancelling and re-arming it.
+/// full-buffer read and a re-parse — too much to do per keystroke. Rendering
+/// only once the user stops, which is what the debounce this replaced did,
+/// costs the opposite thing: the preview sits frozen for as long as they keep
+/// typing. A leading-edge throttle does neither. The first change renders at
+/// once and the rest land on a steady cadence, so the summary visibly
+/// accumulates while the notes are being written.
 ///
 /// `:TimeTrackingUpdate` deliberately still calls [`update_preview_fn`]
-/// directly: a user who types the command expects to see the result, not to
-/// wait out the debounce window.
-#[cfg(not(windows))]
-pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
-    // Arm nothing for a buffer that can never render a preview. The
-    // autocommand fires for every `*.md` buffer, not just tracking notes, and
-    // every armed timer is an allocation the libuv binding never frees (see
-    // `PENDING_UPDATE`). `update_preview_fn` makes this same check when the
-    // timer fires, so skipping the arm changes no behaviour — it only avoids
-    // the leak, the timer, and the `schedule` round-trip for a buffer whose
-    // render would have been a no-op.
+/// directly: a user who types the command expects to see the result now, not
+/// at the next window boundary.
+pub fn update_preview_throttled(config: &'static Config) -> Result<()> {
+    // Render nothing for a buffer that can never show a preview. The
+    // autocommand fires for every `*.md` buffer, not just tracking notes, so
+    // without this every README keystroke would pay for a window scan and a
+    // timer. `update_preview_fn` re-checks this when the timer fires, against
+    // whatever buffer is current by then.
     if !is_time_tracking_file(config)? {
         return Ok(());
     }
 
-    // Cancel the render armed by the previous keystroke, so the burst renders
-    // once, at its end.
-    PENDING_UPDATE.with(|cell| {
-        if let Some(timer) = cell.borrow_mut().as_mut() {
-            let _ = timer.stop();
-        }
+    // A render is already booked for this window. Leave its deadline alone —
+    // moving it is exactly what would turn this back into a debounce.
+    if THROTTLE_PENDING.get() {
+        return Ok(());
+    }
+
+    let remaining = LAST_RENDER.get().and_then(|last| {
+        let elapsed = last.elapsed();
+        (elapsed < THROTTLE).then(|| THROTTLE - elapsed)
     });
 
-    // The libuv callback runs in Neovim's fast event context, where the API is
-    // off limits (`E5560: nvim_buf_set_lines must not be called in a fast
-    // event context`), so hand the render back to the main loop.
-    //
-    // The render must be wrapped in `catch_nvim_panic`, as the other
-    // `schedule` body in `lib.rs` is. Before the debounce, the autocommand ran
-    // `TimeTrackingUpdate`, whose `Function::from_fn` caught panics for us; now
-    // the command's wrapper has long returned by the time this runs. The
-    // formatter parses half-typed markdown on every pause in typing, and a
-    // panic escaping here would unwind out of nvim-oxi's `extern "C"` Lua
-    // trampoline — aborting Neovim with unsaved buffers rather than printing a
-    // message.
-    let timer = TimerHandle::once(DEBOUNCE, move || {
-        PENDING_UPDATE.with(|cell| *cell.borrow_mut() = None);
-        schedule(move |()| {
-            if let Err(e) = catch_nvim_panic(|| update_preview_fn(config)) {
-                log_error!("[time-tracking-nvim] debounced update failed: {}", e);
-            }
-        });
-    })?;
+    let Some(remaining) = remaining else {
+        // Leading edge: no window is open, so render now, synchronously.
+        LAST_RENDER.set(Some(Instant::now()));
+        return update_preview_fn(config);
+    };
 
-    PENDING_UPDATE.with(|cell| *cell.borrow_mut() = Some(timer));
+    // Inside an open window: book the render for the window *boundary* rather
+    // than for `THROTTLE` from now, so the cadence stays even under continuous
+    // typing instead of drifting later with each keystroke.
+    THROTTLE_PENDING.set(true);
+    if let Err(e) = arm_throttle_timer(remaining) {
+        // Nothing else clears the flag if arming failed, and a stuck flag
+        // would freeze the preview for the rest of the session.
+        THROTTLE_PENDING.set(false);
+        return Err(e);
+    }
+
     Ok(())
 }
 
-/// Windows counterpart to [`update_preview_debounced`]: renders immediately.
+/// Ask Neovim to run `:TimeTrackingThrottleFire` in `remaining`.
 ///
-/// The debounce needs nvim-oxi's `libuv` feature, which cannot work on Windows.
-/// Its `uv_*` externs carry no `raw-dylib` link attribute — the mechanism every
-/// other nvim-oxi FFI module uses to import from the host — so an MSVC build has
-/// nothing to resolve them against and fails with `LNK2019`. Annotating them
-/// would only move the failure to load time: the official v0.12.5 distribution
-/// exports 5710 symbols from `nvim.exe` and zero `uv_*`, and `lua51.dll` exports
-/// none either, so the symbols are simply absent.
+/// Deliberately Neovim's own `timer_start()` rather than nvim-oxi's
+/// `libuv::TimerHandle`, which backed the debounce this replaced.
+/// `TimerHandle` cannot be built on Windows — nvim-oxi's `uv_*` externs carry
+/// no `raw-dylib` attribute and `nvim.exe` exports no such symbols — and it
+/// leaks its `uv_timer_t` on every arm, because `libuv::Handle` has no `Drop`
+/// impl and `TimerHandle` offers no `&mut self` re-arm. `timer_start` has
+/// neither problem, and its callback runs on the main loop rather than in
+/// libuv's fast event context, so the render it triggers needs no `schedule()`
+/// hop to reach somewhere the API is legal.
 ///
-/// Windows therefore keeps the pre-debounce behaviour — one render per keystroke.
-/// That is what every platform did before B3, so this is a missing optimisation,
-/// not a regression. The tracking-file guard still applies, so non-tracking `*.md`
-/// buffers cost nothing beyond the check itself.
-#[cfg(windows)]
-pub fn update_preview_debounced(config: &'static Config) -> Result<()> {
-    update_preview_fn(config)
+/// The zero-argument lambda is Vim's own documented timer idiom (`:help
+/// timer_start`): Neovim passes the timer id and the lambda ignores it.
+fn arm_throttle_timer(remaining: Duration) -> Result<()> {
+    // Floor of 1ms: `timer_start(0, ...)` is legal but says "next loop turn",
+    // which is not what a sub-millisecond remainder means.
+    let ms = remaining.as_millis().max(1);
+    api::command(&format!(
+        "call timer_start({ms}, {{-> execute('TimeTrackingThrottleFire')}})"
+    ))?;
+    Ok(())
+}
+
+/// `:TimeTrackingThrottleFire`: the render [`update_preview_throttled`] booked
+/// for the end of the current window.
+///
+/// Internal — the timer is its only caller.
+///
+/// Returns `Ok(())` even when the render fails. This runs from a timer
+/// callback with no user action attached, so an `Err` would surface as a bare
+/// "Error executing vim function callback" with nothing to connect it to. The
+/// logged message is more use than the error.
+pub fn throttle_fire(config: &'static Config) -> Result<()> {
+    THROTTLE_PENDING.set(false);
+    LAST_RENDER.set(Some(Instant::now()));
+
+    if let Err(e) = update_preview_fn(config) {
+        log_error!("[time-tracking-nvim] throttled update failed: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Clear the throttle window, so the next [`update_preview_throttled`] takes
+/// the leading edge.
+///
+/// Test seam, not interface: it lets the integration tests establish a known
+/// window boundary without sleeping.
+#[doc(hidden)]
+pub fn reset_throttle_for_test() {
+    THROTTLE_PENDING.set(false);
+    LAST_RENDER.set(None);
 }
 
 /// Is a window in the current tabpage showing the preview?
@@ -301,8 +332,8 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     Ok(())
 }
 
-/// `:TimeTrackingUpdate`, and the render the debounce timer schedules: rebuilds
-/// the day summary in the preview.
+/// `:TimeTrackingUpdate`, and the render the throttle books: rebuilds the day
+/// summary in the preview.
 ///
 /// Does nothing unless the current buffer is a tracking file *and* a preview
 /// window is already open — it never opens one.
