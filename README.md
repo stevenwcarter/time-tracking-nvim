@@ -72,15 +72,15 @@ require("time-tracking-nvim").setup({
   no `SHA256SUMS`, or the digest does not match, the download is refused rather
   than installed.
 
-  **Releases up to and including v0.1.7 predate `SHA256SUMS`.** The plugin always
-  downloads the release matching its own version, so until the next release is
-  published by the checksum-producing workflow, *every* auto-download refuses —
-  whether or not you pinned a tag. If your download has just started failing with
-  `No SHA256SUMS published for this release`, that is why; setting this option to
-  `true` installs anyway.
+  **`SHA256SUMS` is published from v0.2.0 onward; releases up to and including
+  v0.1.7 predate it.** The plugin always downloads the release matching its own
+  version, so on v0.2.0 or later this is transparent. If you pin an older tag,
+  that release has no checksums and the download refuses with
+  `No SHA256SUMS published for this release` — setting this option to `true`
+  installs anyway.
 
-  Leave it `false` once a verified release is available — a downloaded native
-  library is loaded with `require`, which executes its code inside your editor.
+  Leave it `false` otherwise — a downloaded native library is loaded with
+  `require`, which executes its code inside your editor.
   Note that this option only ever waives a *missing* `SHA256SUMS`: a digest
   **mismatch** is always refused, no matter how this is set.
 

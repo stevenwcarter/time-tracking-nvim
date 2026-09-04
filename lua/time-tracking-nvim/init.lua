@@ -19,7 +19,7 @@ local function echo(chunks, opts)
 end
 
 -- Plugin version (should match Cargo.toml)
-local PLUGIN_VERSION = "0.1.7"
+local PLUGIN_VERSION = "0.2.0"
 
 -- Default configuration
 local default_config = {
