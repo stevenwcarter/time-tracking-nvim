@@ -80,7 +80,15 @@ local function get_platform_info()
 	if arch == "amd64" then
 		arch = "x86_64"
 	end
-	if arch == "aarch64" then
+	-- macOS's own `uname -m` already reports "arm64", so this remap is a
+	-- no-op there in practice; it exists only to tolerate a uname variant
+	-- that reports "aarch64" instead. Scoped to darwin because
+	-- platform_mappings.linux is keyed "aarch64" (Linux's own uname -m
+	-- spelling) — applying this unconditionally made Linux aarch64
+	-- unreachable: it got remapped to "arm64", which is not a key in the
+	-- linux table, and the lookup below failed with "Unsupported platform:
+	-- linux-arm64".
+	if os_name == "darwin" and arch == "aarch64" then
 		arch = "arm64"
 	end
 
