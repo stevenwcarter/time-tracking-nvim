@@ -1188,7 +1188,79 @@ fn test_throttled_update_coalesces_a_burst() {
 }
 
 #[nvim_oxi::test]
-fn test_throttled_update_eventually_renders() {
+fn test_throttled_update_renders_first_change_immediately() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+    let preview = preview_buffer();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    // No event-loop turn happens between this call and the assertion, so
+    // anything deferred leaves the sentinel in place. The debounce this
+    // replaced always deferred.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    assert!(
+        !preview_text(&preview).contains("PLACEHOLDER"),
+        "the first change in a burst must render before the call returns; \
+         the preview still reads {:?}",
+        preview_text(&preview)
+    );
+}
+
+#[nvim_oxi::test]
+fn test_throttled_burst_books_exactly_one_render() {
+    cleanup_preview_buffers();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let md = create_test_file(temp_dir.path(), "today.md", "# Today");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    create_or_update_preview("PLACEHOLDER").unwrap();
+
+    // Registered after the preview exists, so no BufEnter handler runs during
+    // setup. Needed because the calls below book a real timer, which fires
+    // `:TimeTrackingThrottleFire`.
+    time_tracking_with_config(config_static).unwrap();
+
+    // No event-loop turn from here on, so nothing this books can fire before
+    // the assertions and `timer_info()` still lists it.
+    time_tracking_nvim::reset_throttle_for_test();
+    let timers_before: i64 = api::eval("len(timer_info())").unwrap();
+
+    // Burn the leading edge, then 20 more changes inside the same window.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    for _ in 0..20 {
+        time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    }
+
+    let timers_after: i64 = api::eval("len(timer_info())").unwrap();
+    assert_eq!(
+        timers_after - timers_before,
+        1,
+        "21 changes inside one throttle window must book exactly one render, \
+         got {}",
+        timers_after - timers_before
+    );
+
+    // Leave nothing armed for whatever test runs next in this Neovim.
+    api::command("call timer_stopall()").unwrap();
+}
+
+#[nvim_oxi::test]
+fn test_throttled_update_renders_the_trailing_change() {
     cleanup_preview_buffers();
 
     let (config, temp_dir) = create_test_config_with_temp_dir();
@@ -1202,12 +1274,25 @@ fn test_throttled_update_eventually_renders() {
     create_or_update_preview("PLACEHOLDER").unwrap();
     let preview = preview_buffer();
 
-    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    // The trailing render arrives through `:TimeTrackingThrottleFire`, so the
+    // commands must exist or the timer fires into E492.
+    time_tracking_with_config(config_static).unwrap();
+    time_tracking_nvim::reset_throttle_for_test();
 
-    // Turn the event loop so the one-shot timer can fire and the render it
-    // schedules can run. Without this the debounce would be indistinguishable
-    // from doing nothing at all. `bufnr()` takes a pattern, so address the
-    // preview by handle instead.
+    // Burn the leading edge, then re-prime the sentinel so only a *second*,
+    // trailing render can clear it.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    create_or_update_preview("PLACEHOLDER").unwrap();
+
+    // A change inside the window: booked, not rendered.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+    assert!(
+        preview_text(&preview).contains("PLACEHOLDER"),
+        "a change inside an open window must not render synchronously"
+    );
+
+    // Turn the event loop past the window boundary so the booked render fires.
+    // `bufnr()` takes a pattern, so address the preview by handle.
     let handle = preview.handle();
     api::exec2(
         &format!(
@@ -1222,7 +1307,8 @@ fn test_throttled_update_eventually_renders() {
 
     assert!(
         !preview_text(&preview).contains("PLACEHOLDER"),
-        "the debounced update must eventually render; preview still reads {:?}",
+        "the booked trailing render must land, so a burst never leaves the \
+         preview stale; it still reads {:?}",
         preview_text(&preview)
     );
 }
