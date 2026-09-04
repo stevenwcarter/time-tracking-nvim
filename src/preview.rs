@@ -111,6 +111,16 @@ fn find_preview() -> Result<Option<(Buffer, Option<Window>)>> {
 #[cfg(not(windows))]
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Below this width a vertical split fails outright with E36 and damages the
+/// layout on the way out, so no preview is the better outcome.
+const MIN_SPLIT_COLUMNS: u32 = 40;
+
+/// The preview aims for this fraction of the total screen width.
+const PREVIEW_SCREEN_FRACTION: i64 = 3;
+
+/// Floor for the preview, and the minimum width left to the window it split from.
+const MIN_PREVIEW_COLUMNS: u32 = 20;
+
 #[cfg(not(windows))]
 thread_local! {
     /// In-flight debounce timer, if any.
@@ -352,9 +362,7 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         let origin = api::get_current_win();
         let source_width = origin.get_width().unwrap_or(u32::MAX);
 
-        // Below ~40 columns the vsplit fails outright with E36 and wrecks the
-        // layout on the way. No preview is a better outcome than a broken one.
-        if source_width < 40 {
+        if source_width < MIN_SPLIT_COLUMNS {
             debug_log!(
                 "[ttnvim] skipping preview split: source window is {} columns\n",
                 source_width
@@ -424,8 +432,10 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         if let Ok(total_cols) =
             api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())
         {
-            let one_third = (total_cols / 3).max(0) as u32;
-            let width = one_third.min(source_width.saturating_sub(20)).max(20);
+            let one_third = u32::try_from(total_cols / PREVIEW_SCREEN_FRACTION).unwrap_or(u32::MAX);
+            let width = one_third
+                .min(source_width.saturating_sub(MIN_PREVIEW_COLUMNS))
+                .max(MIN_PREVIEW_COLUMNS);
             if let Err(e) = win.set_width(width) {
                 debug_log!("[ttnvim] could not set preview width: {}\n", e);
             }
