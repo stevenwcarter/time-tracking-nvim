@@ -284,6 +284,15 @@ end
 -- either side.
 local SHA256_HEX_PATTERN = "%f[%x]" .. string.rep("%x", 64) .. "%f[%X]"
 
+-- `:wait()` below blocks Neovim's event loop, so a wedged checksum binary
+-- would hang the editor unrecoverably rather than just this download. Hashing
+-- even a large archive takes milliseconds; this is generous headroom, not a
+-- realistic expected duration. `SystemObj:wait(timeout)` force-kills the
+-- process and returns code 124 on timeout, which the `out.code ~= 0` check
+-- below already treats as a checksum failure — a fail-closed refusal, same as
+-- any other command failure here.
+local SHA256_TIMEOUT_MS = 5000
+
 -- Compute the SHA-256 of a file.
 --
 -- Prefers a subprocess over reading the file into Lua: readfile/writefile
@@ -292,11 +301,11 @@ local SHA256_HEX_PATTERN = "%f[%x]" .. string.rep("%x", 64) .. "%f[%X]"
 local function file_sha256(path)
 	local out
 	if vim.fn.executable("sha256sum") == 1 then
-		out = vim.system({ "sha256sum", "--", path }, { text = true }):wait()
+		out = vim.system({ "sha256sum", "--", path }, { text = true }):wait(SHA256_TIMEOUT_MS)
 	elseif vim.fn.executable("shasum") == 1 then
-		out = vim.system({ "shasum", "-a", "256", "--", path }, { text = true }):wait()
+		out = vim.system({ "shasum", "-a", "256", "--", path }, { text = true }):wait(SHA256_TIMEOUT_MS)
 	elseif vim.fn.executable("certutil") == 1 then
-		out = vim.system({ "certutil", "-hashfile", path, "SHA256" }, { text = true }):wait()
+		out = vim.system({ "certutil", "-hashfile", path, "SHA256" }, { text = true }):wait(SHA256_TIMEOUT_MS)
 	else
 		return nil, "no SHA-256 implementation available (need sha256sum, shasum or certutil)"
 	end
