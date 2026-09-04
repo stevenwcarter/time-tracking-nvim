@@ -333,8 +333,12 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
         api::set_option_value("modifiable", true, &bopts)?;
         let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
-        buf.set_lines(0..buf.line_count()?, false, lines)?;
+        let write = buf.set_lines(0..buf.line_count()?, false, lines);
+        // Restore before propagating: an early `?` here would leave the preview
+        // permanently modifiable, so the user could type into it and lose the
+        // edits on the next render.
         api::set_option_value("modifiable", false, &bopts)?;
+        write?;
         set_last_output(Some(output.to_owned()));
     }
 
