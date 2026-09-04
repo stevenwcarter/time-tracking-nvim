@@ -434,7 +434,12 @@ fn style_preview_window(win: &mut Window, source_width: u32) {
     if let Ok(total_cols) =
         api::get_option_value::<i64>("columns", &OptionOptsBuilder::default().build())
     {
-        let one_third = u32::try_from(total_cols / PREVIEW_SCREEN_FRACTION).unwrap_or(u32::MAX);
+        // Saturate to 0, not `u32::MAX`: a negative `columns` is unreachable
+        // (Neovim's minimum is 12), but if it ever were, clamping low leaves
+        // the preview at `MIN_PREVIEW_COLUMNS`, while clamping high would hand
+        // it everything the source window can spare. Low is the direction the
+        // pre-`try_from` `(total_cols / 3).max(0) as u32` failed in.
+        let one_third = u32::try_from(total_cols / PREVIEW_SCREEN_FRACTION).unwrap_or(0);
         let width = one_third
             .min(source_width.saturating_sub(MIN_PREVIEW_COLUMNS))
             .max(MIN_PREVIEW_COLUMNS);
