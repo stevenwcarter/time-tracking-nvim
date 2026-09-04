@@ -21,6 +21,10 @@ end
 -- Plugin version (should match Cargo.toml)
 local PLUGIN_VERSION = "0.2.0"
 
+local REPO = "stevenwcarter/time-tracking-nvim"
+local RELEASES_URL = "https://github.com/" .. REPO .. "/releases"
+local API_BASE = "https://api.github.com/repos/" .. REPO .. "/releases"
+
 -- Default configuration
 local default_config = {
 	-- Add any configuration options here
@@ -407,9 +411,8 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	-- no version was requested: previously this always fetched /latest and then
 	-- recorded expected_version, so the .version file was an assertion about
 	-- what we wanted rather than an observation of what we got.
-	local api_base = "https://api.github.com/repos/stevenwcarter/time-tracking-nvim/releases"
-	local release_url = expected_version and (api_base .. "/tags/v" .. expected_version)
-		or (api_base .. "/latest")
+	local release_url = expected_version and (API_BASE .. "/tags/v" .. expected_version)
+		or (API_BASE .. "/latest")
 
 	-- -S (in addition to -s) so a hard failure below still has a real curl
 	-- error on stderr instead of an empty string; -s alone suppresses it.
@@ -732,7 +735,7 @@ function M.setup(opts)
 				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "curl is required for auto-download but not found", "Normal" },
 				{ "\nPlease install curl or download manually from: ", "Normal" },
-				{ "https://github.com/stevenwcarter/time-tracking-nvim/releases", "Underlined" },
+				{ RELEASES_URL, "Underlined" },
 			})
 			return
 		end
@@ -742,7 +745,7 @@ function M.setup(opts)
 				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "tar or unzip is required for auto-download but not found", "Normal" },
 				{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
-				{ "https://github.com/stevenwcarter/time-tracking-nvim/releases", "Underlined" },
+				{ RELEASES_URL, "Underlined" },
 			})
 			return
 		end
@@ -791,7 +794,7 @@ function M.setup(opts)
 					{ "\n\nManual installation instructions:", "Normal" },
 					{ "\n1. Go to: ", "Normal" },
 					{
-						"https://github.com/stevenwcarter/time-tracking-nvim/releases",
+						RELEASES_URL,
 						"Underlined",
 					},
 					{ "\n2. Download: ", "Normal" },
