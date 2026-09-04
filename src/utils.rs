@@ -140,9 +140,8 @@ pub fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
 /// Checks if the provided buffer is a time tracking file (markdown file in data directory)
 pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Result<bool> {
     let buffer_name = current_buffer.get_name()?;
-    let buffer_name_str = match buffer_name.to_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(false),
+    let Ok(buffer_name_str) = buffer_name.to_str() else {
+        return Ok(false);
     };
 
     if buffer_name_str.is_empty() {
