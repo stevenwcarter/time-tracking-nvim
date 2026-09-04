@@ -644,6 +644,34 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	end)
 end
 
+-- Decide what setup() must do about the library on disk.
+--
+-- A binary with no .version file beside it predates version tracking, so it is
+-- classified exactly like a genuine mismatch: both need an update, and both
+-- carry a reason string that setup() puts in front of the user.
+--
+-- Returns:
+--   binary_exists  the library is readable at binary_path
+--   needs_update   its recorded version and PLUGIN_VERSION disagree
+--   update_reason  why, for the message; "" when no update is needed
+local function classify_binary_state(binary_path)
+	if vim.fn.filereadable(binary_path) ~= 1 then
+		return false, false, ""
+	end
+
+	local binary_version = read_binary_version()
+	if not binary_version then
+		return true, true, "no version information found (updating to track versions)"
+	end
+
+	if binary_version == PLUGIN_VERSION then
+		return true, false, ""
+	end
+
+	local reason = string.format("version mismatch (plugin: %s, binary: %s)", PLUGIN_VERSION, binary_version)
+	return true, true, reason
+end
+
 -- Load the native module and classify the outcome.
 --
 -- The module can fail in two distinct ways that callers must report
@@ -839,7 +867,9 @@ function M.setup(opts)
 
 	local config = vim.tbl_extend("force", default_config, opts)
 
-	-- Store config for other functions
+	-- Published, not merely kept: M.download() reads allow_unverified_download
+	-- back off M.config at call time. This has to stay above the platform guard
+	-- and the whole ladder, so that the branches which return early publish it too.
 	M.config = config
 
 	local binary_path, target = get_binary_path()
@@ -851,29 +881,8 @@ function M.setup(opts)
 		return
 	end
 
-	local binary_exists = vim.fn.filereadable(binary_path) == 1
-	
-	-- Check version compatibility
-	local needs_update = false
-	local update_reason = ""
-	
-	if binary_exists then
-		local current_binary_version = read_binary_version()
-		if not current_binary_version then
-			-- No version file found, assume it's an old binary
-			needs_update = true
-			update_reason = "no version information found (updating to track versions)"
-		elseif current_binary_version ~= PLUGIN_VERSION then
-			-- Version mismatch between plugin and binary
-			needs_update = true
-			update_reason = string.format(
-				"version mismatch (plugin: %s, binary: %s)",
-				PLUGIN_VERSION,
-				current_binary_version
-			)
-		end
-	end
-	
+	local binary_exists, needs_update, update_reason = classify_binary_state(binary_path)
+
 	-- Handle missing binary
 	if not binary_exists and config.auto_download then
 		-- Returns either way. Without a binary there is nothing to fall back
