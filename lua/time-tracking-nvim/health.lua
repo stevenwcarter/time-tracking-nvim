@@ -20,7 +20,7 @@ function M.check()
 		platform_info, platform_err = internal.get_platform_info()
 	end
 	if not platform_info then
-		health.error("Unsupported platform: " .. tostring(platform_err), {
+		health.error(tostring(platform_err), {
 			"Supported: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64",
 		})
 		return
