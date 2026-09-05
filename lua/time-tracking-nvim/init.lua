@@ -48,7 +48,23 @@ local function add_to_cpath(binary_path)
 	end
 end
 
--- Normalize libuv's sysname to the keys used in platform_mappings.
+-- Target triple and library extension per OS/arch. One of four places this
+-- mapping lives; see the comment on `normalize_arch` and T23's pointers.
+local PLATFORM_MAPPINGS = {
+	linux = {
+		x86_64 = { target = "x86_64-unknown-linux-gnu", ext = "so" },
+		aarch64 = { target = "aarch64-unknown-linux-gnu", ext = "so" },
+	},
+	darwin = {
+		x86_64 = { target = "x86_64-apple-darwin", ext = "dylib" },
+		arm64 = { target = "aarch64-apple-darwin", ext = "dylib" },
+	},
+	windows = {
+		x86_64 = { target = "x86_64-pc-windows-msvc", ext = "dll" },
+	},
+}
+
+-- Normalize libuv's sysname to the keys used in PLATFORM_MAPPINGS.
 -- uv.os_uname() mimics uname, so Windows reports "Windows_NT" (and MSYS/MinGW
 -- shells report "MINGW64_NT-…"/"MSYS_NT-…"), none of which is "windows".
 local function normalize_os_name(os_name)
@@ -58,42 +74,32 @@ local function normalize_os_name(os_name)
 	return os_name
 end
 
--- Get platform-specific information
-local function get_platform_info()
-	local os_name = normalize_os_name(uv.os_uname().sysname:lower())
-	local arch = uv.os_uname().machine:lower()
-
-	local platform_mappings = {
-		linux = {
-			x86_64 = { target = "x86_64-unknown-linux-gnu", ext = "so" },
-			aarch64 = { target = "aarch64-unknown-linux-gnu", ext = "so" },
-		},
-		darwin = {
-			x86_64 = { target = "x86_64-apple-darwin", ext = "dylib" },
-			arm64 = { target = "aarch64-apple-darwin", ext = "dylib" },
-		},
-		windows = {
-			x86_64 = { target = "x86_64-pc-windows-msvc", ext = "dll" },
-		},
-	}
-
-	-- Handle alternative arch names
+-- Fold alternative architecture spellings onto the keys PLATFORM_MAPPINGS uses.
+--
+-- macOS's own `uname -m` already reports "arm64", so the darwin remap is a
+-- no-op there in practice; it exists only to tolerate a uname variant that
+-- reports "aarch64" instead. It is scoped to darwin because
+-- PLATFORM_MAPPINGS.linux is keyed "aarch64" (Linux's own uname -m spelling) —
+-- applying it unconditionally made Linux aarch64 unreachable: it got remapped
+-- to "arm64", which is not a key in the linux table, and the lookup failed with
+-- "Unsupported platform: linux-arm64".
+local function normalize_arch(os_name, arch)
 	if arch == "amd64" then
 		arch = "x86_64"
 	end
-	-- macOS's own `uname -m` already reports "arm64", so this remap is a
-	-- no-op there in practice; it exists only to tolerate a uname variant
-	-- that reports "aarch64" instead. Scoped to darwin because
-	-- platform_mappings.linux is keyed "aarch64" (Linux's own uname -m
-	-- spelling) — applying this unconditionally made Linux aarch64
-	-- unreachable: it got remapped to "arm64", which is not a key in the
-	-- linux table, and the lookup below failed with "Unsupported platform:
-	-- linux-arm64".
 	if os_name == "darwin" and arch == "aarch64" then
 		arch = "arm64"
 	end
+	return arch
+end
 
-	local platform = platform_mappings[os_name]
+-- Get platform-specific information
+local function get_platform_info()
+	local uname = uv.os_uname()
+	local os_name = normalize_os_name(uname.sysname:lower())
+	local arch = normalize_arch(os_name, uname.machine:lower())
+
+	local platform = PLATFORM_MAPPINGS[os_name]
 	if not platform or not platform[arch] then
 		return nil, string.format("Unsupported platform: %s-%s", os_name, arch)
 	end
