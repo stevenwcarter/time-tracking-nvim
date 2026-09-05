@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# pre-commit — format staged Rust files with rustfmt, then restage them.
+#
+#   Enable:        git config core.hooksPath scripts/hooks
+#   Bypass once:   git commit --no-verify
+#   Bypass always: SKIP_RUSTFMT=1 git commit
+#
+# Only files whose working-tree content is *entirely* staged get formatted. A
+# file carrying both staged and unstaged changes is left alone and named in the
+# output: rustfmt rewrites the whole file, so restaging it afterwards would
+# sweep the unstaged half into the commit that deliberately held it back.
+#
+# rustfmt takes its edition from rustfmt.toml at the repo root. That file has to
+# exist and has to agree with every Cargo.toml's edition — `cargo fmt` reads the
+# edition per-crate, so if they disagree this hook and CI format differently and
+# you get permanent stray diffs.
+
+set -euo pipefail
+
+if [ "${SKIP_RUSTFMT:-0}" = "1" ]; then
+    exit 0
+fi
+
+# Mid-merge/rebase/cherry-pick: leave conflict resolution alone.
+git_dir="$(git rev-parse --git-dir)"
+for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    if [ -e "$git_dir/$marker" ]; then
+        exit 0
+    fi
+done
+
+if ! command -v rustfmt >/dev/null 2>&1; then
+    printf 'pre-commit: rustfmt not found; skipping Rust formatting\n' >&2
+    exit 0
+fi
+
+# Staged Rust files: added/copied/modified only, never deletions.
+staged=()
+while IFS= read -r -d '' f; do staged+=("$f"); done \
+    < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.rs')
+if [ "${#staged[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+# Rust files that also carry unstaged working-tree changes.
+dirty=()
+while IFS= read -r -d '' f; do dirty+=("$f"); done \
+    < <(git diff --name-only -z -- '*.rs')
+
+to_format=()
+partial=()
+for f in "${staged[@]}"; do
+    is_partial=0
+    for d in ${dirty[@]+"${dirty[@]}"}; do
+        if [ "$f" = "$d" ]; then
+            is_partial=1
+            break
+        fi
+    done
+    if [ "$is_partial" -eq 1 ]; then
+        partial+=("$f")
+    else
+        to_format+=("$f")
+    fi
+done
+
+changed=()
+for f in ${to_format[@]+"${to_format[@]}"}; do
+    [ -f "$f" ] || continue
+    before="$(git hash-object "$f")"
+    if ! rustfmt --quiet "$f"; then
+        printf 'pre-commit: rustfmt failed on %s — commit aborted\n' "$f" >&2
+        exit 1
+    fi
+    after="$(git hash-object "$f")"
+    if [ "$before" != "$after" ]; then
+        git add -- "$f"
+        changed+=("$f")
+    fi
+done
+
+if [ "${#changed[@]}" -gt 0 ]; then
+    printf 'pre-commit: reformatted and restaged %d file(s):\n' "${#changed[@]}"
+    printf '  %s\n' "${changed[@]}"
+fi
+
+if [ "${#partial[@]}" -gt 0 ]; then
+    printf 'pre-commit: NOT formatted — these have both staged and unstaged changes:\n' >&2
+    printf '  %s\n' "${partial[@]}" >&2
+    printf 'pre-commit: stage the rest, stash it, or run rustfmt on them yourself.\n' >&2
+fi
+
+exit 0

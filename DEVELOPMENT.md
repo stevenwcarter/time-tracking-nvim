@@ -82,6 +82,28 @@ The integration tests are located in the `integration_tests/` directory and use 
 
 **Note**: Integration tests require Neovim to be installed and available in PATH.
 
+## Formatting
+
+`rustfmt.toml` pins `edition = "2024"` at the repo root, and every crate's
+`Cargo.toml` sets the same. Keep them equal: `cargo fmt` takes the edition from
+each `Cargo.toml` while a bare `rustfmt` takes it from `rustfmt.toml`, so if
+they drift apart the two tools format differently and you get stray diffs that
+never settle.
+
+An optional pre-commit hook formats staged Rust files and restages them:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+It only touches files whose changes are *entirely* staged. A file with both
+staged and unstaged changes is left alone and named in the output — rustfmt
+rewrites whole files, so restaging one would sweep the unstaged half into the
+commit. Bypass with `git commit --no-verify`, or `SKIP_RUSTFMT=1 git commit`.
+
+CI checks formatting for both crates separately, since `integration_tests` is
+excluded from the workspace and the root `cargo fmt` never reaches it.
+
 ## Release Process
 
 1. Bump the version in **both** `Cargo.toml` (`version = "X.Y.Z"`) and
