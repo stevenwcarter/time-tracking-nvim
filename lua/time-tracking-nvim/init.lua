@@ -31,7 +31,7 @@ local function notify(hl, chunks, opts)
 end
 
 -- Plugin version (should match Cargo.toml)
-local PLUGIN_VERSION = "0.2.1"
+local PLUGIN_VERSION = "0.2.2"
 
 local REPO = "stevenwcarter/time-tracking-nvim"
 local RELEASES_URL = "https://github.com/" .. REPO .. "/releases"
