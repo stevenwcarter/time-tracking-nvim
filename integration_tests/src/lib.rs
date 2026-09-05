@@ -2081,7 +2081,7 @@ fn test_close_preview_closes_a_preview_living_in_another_tabpage() {
 /// buffer handle 9_999_999 does not exist, so any call on it errors.
 fn line_write_that_always_fails(
     _buf: &mut nvim_oxi::api::Buffer,
-    _lines: Vec<String>,
+    _lines: Vec<&str>,
 ) -> nvim_oxi::Result<()> {
     nvim_oxi::api::Buffer::from(9_999_999_i32).line_count()?;
     Ok(())

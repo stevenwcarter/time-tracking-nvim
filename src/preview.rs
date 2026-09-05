@@ -392,7 +392,7 @@ fn create_preview_buffer() -> Result<Buffer> {
 }
 
 /// The real line write behind [`write_preview_contents`].
-fn set_preview_lines(buf: &mut Buffer, lines: Vec<String>) -> Result<()> {
+fn set_preview_lines(buf: &mut Buffer, lines: Vec<&str>) -> Result<()> {
     buf.set_lines(0..buf.line_count()?, false, lines)?;
     Ok(())
 }
@@ -430,7 +430,7 @@ fn write_preview_contents(buf: &mut Buffer, output: &str) -> Result<()> {
 pub fn write_preview_contents_with(
     buf: &mut Buffer,
     output: &str,
-    write_lines: fn(&mut Buffer, Vec<String>) -> Result<()>,
+    write_lines: fn(&mut Buffer, Vec<&str>) -> Result<()>,
 ) -> Result<()> {
     if last_output_matches(output) {
         return Ok(());
@@ -438,7 +438,7 @@ pub fn write_preview_contents_with(
 
     let bopts = OptionOptsBuilder::default().buf(buf.clone()).build();
     api::set_option_value("modifiable", true, &bopts)?;
-    let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
+    let lines: Vec<&str> = output.lines().collect();
     let write = write_lines(buf, lines);
     // Restore before propagating: an early `?` here would leave the preview
     // permanently modifiable, so the user could type into it and lose the
