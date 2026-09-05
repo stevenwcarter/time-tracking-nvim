@@ -232,6 +232,28 @@ H.describe("M.check", function()
     H.eq(rec.health, "start,ok,error", "health calls")
   end)
 
+  -- check_binary has three abort branches sharing one `return nil` --
+  -- binary_path nil, filereadable failing (pinned above), and fs_stat
+  -- failing (pinned below). All three collapse into a single helper, which
+  -- is exactly the consolidation that made this finding risk: high, so each
+  -- gets its own case rather than relying on one to stand in for the other
+  -- two.
+  H.it("get_binary_path returns nil: reports and returns before filereadable/fs_stat", function()
+    local world = default_world()
+    world.binary_path = nil
+    local rec = run_check(world)
+    H.eq(rec.probes, "get_platform_info,get_binary_path", "probes: stops before filereadable")
+    H.eq(rec.health, "start,ok,error", "health calls")
+  end)
+
+  H.it("fs_stat fails: reports and returns before version/cpath/load/commands/tools", function()
+    local world = default_world()
+    world.stat = nil
+    local rec = run_check(world)
+    H.eq(rec.probes, "get_platform_info,get_binary_path,filereadable,fs_stat", "probes: stops after fs_stat")
+    H.eq(rec.health, "start,ok,error", "health calls")
+  end)
+
   H.it("version mismatch: warns but continues to the later sections", function()
     local world = default_world()
     world.plugin_version = "2.0.0"
