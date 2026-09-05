@@ -8,22 +8,8 @@ local M = {}
 local health = vim.health
 local uv = vim.uv or vim.loop
 
--- Entry point for `:checkhealth time-tracking-nvim`.
---
--- Reports, in order: platform support, the native library's presence and size,
--- whether the plugin and binary versions agree, whether the binary directory is
--- on package.cpath, whether the native module loads and initializes, whether the
--- commands are registered, and which of curl/tar/unzip auto-download can use.
---
--- The first three checks return early on failure: with no supported platform or
--- no readable library, every later check would only restate the same problem.
-function M.check()
-	health.start("time-tracking-nvim")
-
-	local tt = require("time-tracking-nvim")
-	local internal = tt._internal or {}
-
-	-- Platform
+-- Platform. Returns platform_info, or nil after reporting.
+local function check_platform(internal)
 	local platform_info, platform_err
 	if internal.get_platform_info then
 		platform_info, platform_err = internal.get_platform_info()
@@ -32,11 +18,15 @@ function M.check()
 		health.error(tostring(platform_err), {
 			"Supported: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64",
 		})
-		return
+		return nil
 	end
 	health.ok(string.format("Platform: %s (.%s)", platform_info.target, platform_info.ext))
+	return platform_info
+end
 
-	-- Binary
+-- Binary. Covers both the filereadable and fs_stat checks -- one concern.
+-- Returns binary_path, or nil after reporting.
+local function check_binary(internal)
 	local binary_path
 	if internal.get_binary_path then
 		binary_path = internal.get_binary_path()
@@ -47,7 +37,7 @@ function M.check()
 			"Run :lua require('time-tracking-nvim').download()",
 			"Or build locally with ./build.sh",
 		})
-		return
+		return nil
 	end
 
 	if vim.fn.filereadable(binary_path) ~= 1 then
@@ -55,7 +45,7 @@ function M.check()
 			"Run :lua require('time-tracking-nvim').download()",
 			"Or build locally with ./build.sh",
 		})
-		return
+		return nil
 	end
 
 	local stat = uv.fs_stat(binary_path)
@@ -64,11 +54,14 @@ function M.check()
 			"Check the file's permissions",
 			"Re-run :lua require('time-tracking-nvim').download()",
 		})
-		return
+		return nil
 	end
 	health.ok(string.format("Native library: %s (%d bytes)", binary_path, stat.size))
+	return binary_path
+end
 
-	-- Versions
+-- Versions
+local function check_versions(internal)
 	local binary_version = "unknown"
 	if internal.read_binary_version then
 		binary_version = internal.read_binary_version() or "unknown"
@@ -85,8 +78,10 @@ function M.check()
 	else
 		health.info("Binary version: " .. binary_version)
 	end
+end
 
-	-- cpath
+-- cpath
+local function check_cpath(internal)
 	local root
 	if internal.plugin_root then
 		root = internal.plugin_root()
@@ -98,8 +93,10 @@ function M.check()
 			"setup() adds it; make sure require('time-tracking-nvim').setup() has run",
 		})
 	end
+end
 
-	-- Load
+-- Load
+local function check_native_module(internal)
 	local status, value
 	if internal.load_native then
 		status, value = internal.load_native()
@@ -116,8 +113,10 @@ function M.check()
 			"cpath: " .. package.cpath,
 		})
 	end
+end
 
-	-- Commands
+-- Commands
+local function check_commands()
 	if vim.fn.exists(":TimeTrackingToggle") == 2 then
 		health.ok("Commands are registered")
 	else
@@ -126,8 +125,10 @@ function M.check()
 			"Check the native module load result above for a failed load",
 		})
 	end
+end
 
-	-- External tools used by auto-download
+-- External tools used by auto-download
+local function check_external_tools()
 	for _, tool in ipairs({ "curl", "tar", "unzip" }) do
 		if vim.fn.executable(tool) == 1 then
 			health.ok(tool .. " is available")
@@ -135,6 +136,38 @@ function M.check()
 			health.warn(tool .. " is not available", { "Needed for auto-download/auto-update" })
 		end
 	end
+end
+
+-- Entry point for `:checkhealth time-tracking-nvim`.
+--
+-- Reports, in order: platform support, the native library's presence and size,
+-- whether the plugin and binary versions agree, whether the binary directory is
+-- on package.cpath, whether the native module loads and initializes, whether the
+-- commands are registered, and which of curl/tar/unzip auto-download can use.
+--
+-- The first two checks return early on failure: with no supported platform or
+-- no readable library, every later check would only restate the same problem.
+function M.check()
+	health.start("time-tracking-nvim")
+
+	local tt = require("time-tracking-nvim")
+	local internal = tt._internal or {}
+
+	local platform_info = check_platform(internal)
+	if not platform_info then
+		return
+	end
+
+	local binary_path = check_binary(internal)
+	if not binary_path then
+		return
+	end
+
+	check_versions(internal)
+	check_cpath(internal)
+	check_native_module(internal)
+	check_commands()
+	check_external_tools()
 end
 
 return M
