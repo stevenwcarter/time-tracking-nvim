@@ -129,16 +129,16 @@ fn warn_data_dir_unresolved(configured: &str, e: &std::io::Error) {
 pub fn is_time_tracking_file(config: &Config) -> Result<bool> {
     let current_buffer = api::get_current_buf();
 
-    is_buf_time_tracking_file(current_buffer, config)
+    is_buf_time_tracking_file(&current_buffer, config)
 }
 
 /// Check if the provided window's buffer is a time tracking file (markdown file in data directory)
-pub fn is_win_time_tracking_file(win: Window, config: &Config) -> Result<bool> {
-    is_buf_time_tracking_file(win.get_buf()?, config)
+pub fn is_win_time_tracking_file(win: &Window, config: &Config) -> Result<bool> {
+    is_buf_time_tracking_file(&win.get_buf()?, config)
 }
 
 /// Checks if the provided buffer is a time tracking file (markdown file in data directory)
-pub fn is_buf_time_tracking_file(current_buffer: Buffer, config: &Config) -> Result<bool> {
+pub fn is_buf_time_tracking_file(current_buffer: &Buffer, config: &Config) -> Result<bool> {
     let buffer_name = current_buffer.get_name()?;
     let Ok(buffer_name_str) = buffer_name.to_str() else {
         return Ok(false);
@@ -223,7 +223,7 @@ pub fn any_tracking_visible(config: &Config, exclude_win: Option<i32>) -> Result
             continue;
         }
 
-        if is_win_time_tracking_file(win, config)? {
+        if is_win_time_tracking_file(&win, config)? {
             return Ok(true);
         }
     }

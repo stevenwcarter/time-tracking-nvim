@@ -42,7 +42,7 @@ fn test_is_buf_time_tracking_file_with_md_in_data_dir() {
     buf.set_name(&md_file).unwrap();
 
     // Test the function
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         result,
         "Markdown file in data directory should be identified as time tracking file"
@@ -61,7 +61,7 @@ fn test_is_buf_time_tracking_file_with_txt_in_data_dir() {
     buf.set_name(&txt_file).unwrap();
 
     // Test the function
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         !result,
         "Text file in data directory should not be identified as time tracking file"
@@ -81,7 +81,7 @@ fn test_is_buf_time_tracking_file_with_md_outside_data_dir() {
     buf.set_name(&md_file).unwrap();
 
     // Test the function
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         !result,
         "Markdown file outside data directory should not be identified as time tracking file"
@@ -96,7 +96,7 @@ fn test_is_buf_time_tracking_file_with_empty_buffer_name() {
     let buf = api::create_buf(false, false).unwrap();
 
     // Test the function
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         !result,
         "Buffer with empty name should not be identified as time tracking file"
@@ -119,7 +119,7 @@ fn test_is_buf_time_tracking_file_in_subdirectory() {
     buf.set_name(&md_file).unwrap();
 
     // Test the function
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         result,
         "Markdown file in subdirectory of data directory should be identified as time tracking file"
@@ -161,7 +161,7 @@ fn test_is_win_time_tracking_file() {
     win.set_buf(&buf).unwrap();
 
     // Test the function
-    let result = is_win_time_tracking_file(win, &config).unwrap();
+    let result = is_win_time_tracking_file(&win, &config).unwrap();
     assert!(
         result,
         "Window with markdown buffer in data directory should be identified as time tracking window"
@@ -299,7 +299,7 @@ fn test_only_md_files_can_be_tracking_files() {
         let mut buf = api::create_buf(false, false).unwrap();
         buf.set_name(&file).unwrap();
         assert!(
-            !is_buf_time_tracking_file(buf, &config).unwrap(),
+            !is_buf_time_tracking_file(&buf, &config).unwrap(),
             "{name} must not be a tracking file — the TextChanged autocmd only \
              fires for *.md"
         );
@@ -308,7 +308,7 @@ fn test_only_md_files_can_be_tracking_files() {
     let md = create_test_file(temp_dir.path(), "notes.md", "content");
     let mut buf = api::create_buf(false, false).unwrap();
     buf.set_name(&md).unwrap();
-    assert!(is_buf_time_tracking_file(buf, &config).unwrap());
+    assert!(is_buf_time_tracking_file(&buf, &config).unwrap());
 }
 
 // Tests for lib.rs functions
@@ -748,7 +748,7 @@ fn test_is_buf_time_tracking_file_for_file_not_yet_written() {
     let mut buf = api::create_buf(false, false).unwrap();
     buf.set_name(&unwritten).unwrap();
 
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         result,
         "a .md file in the data directory that has not been written yet \
@@ -765,7 +765,7 @@ fn test_is_buf_time_tracking_file_unwritten_file_outside_data_dir() {
     let mut buf = api::create_buf(false, false).unwrap();
     buf.set_name(&unwritten).unwrap();
 
-    let result = is_buf_time_tracking_file(buf, &config).unwrap();
+    let result = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         !result,
         "tolerating an unwritten file must not also stop enforcing the \
@@ -792,7 +792,7 @@ fn test_missing_data_directory_returns_false_and_does_not_panic() {
     // must be emitted at most once, and no call may panic or error.
     for _ in 0..5 {
         let buf = buf.clone();
-        let result = is_buf_time_tracking_file(buf, &config);
+        let result = is_buf_time_tracking_file(&buf, &config);
         assert!(
             result.is_ok(),
             "a missing data directory must not produce an Err: {:?}",
@@ -820,14 +820,14 @@ fn test_data_dir_memo_does_not_leak_between_configs() {
         let mut buf_a = api::create_buf(false, false).unwrap();
         buf_a.set_name(&file_a).unwrap();
         assert!(
-            is_buf_time_tracking_file(buf_a.clone(), &config_a).unwrap(),
+            is_buf_time_tracking_file(&buf_a.clone(), &config_a).unwrap(),
             "file A must resolve against config A"
         );
 
         let mut buf_b = api::create_buf(false, false).unwrap();
         buf_b.set_name(&file_b).unwrap();
         assert!(
-            is_buf_time_tracking_file(buf_b.clone(), &config_b).unwrap(),
+            is_buf_time_tracking_file(&buf_b.clone(), &config_b).unwrap(),
             "file B must resolve against config B"
         );
 
@@ -835,7 +835,7 @@ fn test_data_dir_memo_does_not_leak_between_configs() {
         // buffer also named file_a) because Neovim does not allow two
         // buffers to share a name at once.
         assert!(
-            !is_buf_time_tracking_file(buf_a.clone(), &config_b).unwrap(),
+            !is_buf_time_tracking_file(&buf_a.clone(), &config_b).unwrap(),
             "file A must not resolve against config B"
         );
 
@@ -873,7 +873,7 @@ fn test_data_dir_miss_is_not_cached() {
     let mut buf = api::create_buf(false, false).unwrap();
     buf.set_name(&md_file_path).unwrap();
 
-    let miss = is_buf_time_tracking_file(buf.clone(), &config).unwrap();
+    let miss = is_buf_time_tracking_file(&buf.clone(), &config).unwrap();
     assert!(
         !miss,
         "a missing data directory must not resolve as a tracking file"
@@ -881,7 +881,7 @@ fn test_data_dir_miss_is_not_cached() {
 
     fs::create_dir_all(&data_dir).unwrap();
 
-    let hit = is_buf_time_tracking_file(buf, &config).unwrap();
+    let hit = is_buf_time_tracking_file(&buf, &config).unwrap();
     assert!(
         hit,
         "a data directory that now exists must resolve on the very next call, \
