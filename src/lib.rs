@@ -8,9 +8,7 @@
 
 use std::panic::{self, AssertUnwindSafe};
 
-use nvim_oxi::api::opts::OptionOptsBuilder;
 use nvim_oxi::api::types::{CommandArgs, CommandNArgs};
-use nvim_oxi::api::{Buffer, Window};
 use nvim_oxi::schedule;
 use nvim_oxi::{
     Dictionary, Function, Result,
@@ -18,7 +16,7 @@ use nvim_oxi::{
 };
 use time_tracking_cli::Config;
 
-use crate::utils::{any_tracking_visible, get_buffer_content, is_time_tracking_file};
+use crate::utils::any_tracking_visible;
 
 mod preview;
 pub mod utils;
