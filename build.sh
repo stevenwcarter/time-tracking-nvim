@@ -52,9 +52,10 @@ if [ -f "target/release/${LIB_NAME}" ]; then
     echo "📦 Installed: lua/time_tracking_nvim.${LIB_EXT}"
 
     # Stamp the version so auto-update does not immediately replace this build.
-    CARGO_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-    printf '%s\n' "${CARGO_VERSION}" > "lua/time_tracking_nvim.${LIB_EXT}.version"
-    echo "🏷  Stamped version: ${CARGO_VERSION}"
+    # shellcheck source=scripts/versions.sh
+    . ./scripts/versions.sh
+    printf '%s\n' "${cargo_version}" > "lua/time_tracking_nvim.${LIB_EXT}.version"
+    echo "🏷  Stamped version: ${cargo_version}"
 else
     echo "❌ Library not found: target/release/${LIB_NAME}"
     exit 1

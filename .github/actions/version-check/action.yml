@@ -1,0 +1,27 @@
+name: Version check
+description: >-
+  Verify Cargo.toml's package version agrees with the PLUGIN_VERSION constant
+  in init.lua, and optionally that both match a release tag.
+inputs:
+  expected_tag:
+    description: Tag version the sources must also match (release only)
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Check Cargo.toml and init.lua agree
+      shell: bash
+      run: |
+        . ./scripts/versions.sh
+        echo "Cargo.toml: ${cargo_version}"
+        echo "init.lua:   ${lua_version}"
+        if [ "${cargo_version}" != "${lua_version}" ]; then
+          echo "::error::PLUGIN_VERSION (${lua_version}) does not match Cargo.toml version (${cargo_version})"
+          exit 1
+        fi
+        expected="${{ inputs.expected_tag }}"
+        if [ -n "${expected}" ] && [ "${cargo_version}" != "${expected#v}" ]; then
+          echo "::error::version mismatch — tag ${expected#v}, Cargo.toml ${cargo_version}, init.lua ${lua_version}"
+          exit 1
+        fi
