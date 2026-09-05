@@ -27,9 +27,6 @@ local API_BASE = "https://api.github.com/repos/" .. REPO .. "/releases"
 
 -- Default configuration
 local default_config = {
-	-- Add any configuration options here
-	-- auto_start = true,
-	-- preview_width = nil, -- Will use 1/3 of screen width
 	auto_download = true, -- Automatically download binaries if missing
 	auto_update = true, -- Automatically update binary when plugin version changes
 	-- Escape hatch for releases published before SHA256SUMS existed (<= v0.1.7)
