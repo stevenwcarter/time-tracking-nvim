@@ -566,6 +566,13 @@ fn open_preview_split(buf: &Buffer) -> Result<()> {
 
 /// Create or update the preview window with formatted time tracking data
 pub fn create_or_update_preview(output: &str) -> Result<()> {
+    // Bail before `find_preview` too: it calls `list_wins` on the current
+    // tabpage, which can error in the same window-less startup state the
+    // guard inside `create_or_update_preview_with` exists to absorb.
+    if api::list_wins().next().is_none() {
+        return Ok(());
+    }
+
     create_or_update_preview_with(find_preview()?, output)
 }
 
