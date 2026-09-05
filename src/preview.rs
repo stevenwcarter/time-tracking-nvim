@@ -663,19 +663,22 @@ pub fn close_preview() -> Result<()> {
     Ok(())
 }
 
+/// Run `r`, reporting any error under `label` and swallowing it.
+///
+/// Both autocommand-driven wrappers want the same thing: a failure reported
+/// once, not propagated. Propagating would re-echo the same message on every
+/// buffer switch. Panics are caught a level up, by `catch_nvim_panic` in
+/// `lib.rs`.
+fn log_and_swallow(label: &str, r: Result<()>) -> Result<()> {
+    if let Err(e) = r {
+        log_error!("{} failed: {}", label, e);
+    }
+    Ok(())
+}
+
 /// Auto-open preview window if this is a time tracking file and preview isn't open
 pub fn auto_open_preview(config: &'static Config) -> Result<()> {
-    // Log and swallow the error rather than surfacing it at the command: this
-    // runs from the VimEnter/BufWinEnter autocommand, so propagating would
-    // re-echo the same failure on every buffer switch. Nothing here catches
-    // unwinds — panics are caught a level up, by `catch_nvim_panic` in `lib.rs`.
-    match auto_open_preview_impl(config) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            log_error!("Auto-open failed: {}", e);
-            Ok(())
-        }
-    }
+    log_and_swallow("Auto-open", auto_open_preview_impl(config))
 }
 
 /// Fallible body behind [`auto_open_preview`]: renders and opens the preview for
@@ -701,17 +704,7 @@ pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
 
 /// Auto-close preview window if we're not in a time tracking file
 pub fn auto_close_preview(config: &'static Config) -> Result<()> {
-    // Log and swallow the error rather than surfacing it at the command, as
-    // `auto_open_preview` does: closing the preview is best-effort. Nothing here
-    // catches unwinds — panics are caught a level up, by `catch_nvim_panic` in
-    // `lib.rs`.
-    match auto_close_preview_impl(config) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            log_error!("Auto-close failed: {}", e);
-            Ok(())
-        }
-    }
+    log_and_swallow("Auto-close", auto_close_preview_impl(config))
 }
 
 pub fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
