@@ -566,11 +566,6 @@ fn open_preview_split(buf: &Buffer) -> Result<()> {
 
 /// Create or update the preview window with formatted time tracking data
 pub fn create_or_update_preview(output: &str) -> Result<()> {
-    // Bail if Neovim has no windows yet (during early startup churn)
-    if api::list_wins().next().is_none() {
-        return Ok(());
-    }
-
     create_or_update_preview_with(find_preview()?, output)
 }
 
@@ -579,10 +574,22 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 /// Callers that had to probe for an open preview before deciding to render
 /// pass their own `find_preview` result straight through, instead of throwing
 /// it away and making this function repeat the scan.
+///
+/// Every path that renders — direct or through [`render_current_buffer`] —
+/// goes through here, so the early-startup bail below has to live here too,
+/// not in [`create_or_update_preview`] alone. The bail runs after `found` is
+/// resolved: `find_preview` only enumerates buffers and windows, which is
+/// safe with no windows open, so moving the check past that lookup costs
+/// nothing.
 fn create_or_update_preview_with(
     found: Option<(Buffer, Option<Window>)>,
     output: &str,
 ) -> Result<()> {
+    // Bail if Neovim has no windows yet (during early startup churn)
+    if api::list_wins().next().is_none() {
+        return Ok(());
+    }
+
     let (preview, preview_win) = match found {
         Some((buf, win)) => (Some(buf), win),
         None => (None, None),
