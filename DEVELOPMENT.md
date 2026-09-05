@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust 1.70+ with cargo
-- Neovim 0.11+
+- Neovim 0.12+
 
 ## Building
 
