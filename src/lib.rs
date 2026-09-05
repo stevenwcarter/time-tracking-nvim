@@ -6,6 +6,7 @@
 //! through the `error` key of the dictionary it returns, because throwing out of
 //! the plugin entry point aborts Neovim on macOS (see the comment there).
 
+use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 
 use nvim_oxi::api::types::{CommandArgs, CommandNArgs};
@@ -96,7 +97,6 @@ fn time_tracking_nvim() -> Result<Dictionary> {
     // Install diagnostic hook to capture the real panic source.
     panic::set_hook(Box::new(|info| {
         let msg = format!("[ttnvim] PANIC: {info}\n");
-        use std::io::Write;
         let _ = std::io::stderr().write_all(msg.as_bytes());
     }));
 
@@ -113,7 +113,6 @@ fn time_tracking_nvim() -> Result<Dictionary> {
                 debug_log!("[ttkvim] time_tracking_with_config succeeded\n");
             }
             Err(e) => {
-                use std::io::Write;
                 let _ = std::io::stderr().write_all(
                     format!("[ttkvim] time_tracking_with_config FAILED: {e}\n").as_bytes(),
                 );
