@@ -11,7 +11,7 @@ nvim --headless -u NONE --noplugin \
   --cmd "lua package.path = package.path .. ';${HERE}/?.lua'" \
   -c "lua
     local failures = 0
-    for _, spec in ipairs({ 'spec_version', 'spec_platform', 'spec_download_url', 'spec_install', 'spec_setup', 'spec_download' }) do
+    for _, spec in ipairs({ 'spec_version', 'spec_platform', 'spec_download_url', 'spec_install', 'spec_setup', 'spec_download', 'spec_health' }) do
       package.loaded['harness'] = nil
       package.loaded[spec] = nil
       local H = require(spec)
