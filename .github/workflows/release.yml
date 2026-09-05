@@ -37,7 +37,9 @@ jobs:
       # supported platforms — the others are PLATFORM_MAPPINGS in
       # lua/time-tracking-nvim/init.lua, the case in build.sh, and the
       # supported-platforms hint in lua/time-tracking-nvim/health.lua. A new
-      # target added here must be added to all three.
+      # target added here must be added to all three — except that this
+      # matrix is already missing aarch64-unknown-linux-gnu, which the other
+      # three advertise as supported, so that user's download 404s instead.
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu

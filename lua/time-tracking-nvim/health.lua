@@ -18,7 +18,9 @@ local function check_platform(internal)
 		-- This hint is one of four places that encode supported platforms —
 		-- the others are PLATFORM_MAPPINGS in init.lua, the case in
 		-- build.sh, and the release.yml build matrix. A new platform added
-		-- here must be added to all three.
+		-- here must be added to all three — except Linux aarch64 below,
+		-- which release.yml does not build or release, so that user gets a
+		-- download failure rather than this unsupported-platform message.
 		health.error(tostring(platform_err), {
 			"Supported: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64",
 		})

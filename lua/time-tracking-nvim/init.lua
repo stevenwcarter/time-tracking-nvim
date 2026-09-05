@@ -64,7 +64,9 @@ end
 -- places that encode supported platforms — the others are the case in
 -- build.sh, the release.yml build matrix, and the supported-platforms hint in
 -- lua/time-tracking-nvim/health.lua. A new platform added here must be added
--- to all three.
+-- to all three — except linux.aarch64 below, which release.yml does not
+-- build or release, so that user's download fails rather than being told
+-- upfront the platform is unsupported.
 local PLATFORM_MAPPINGS = {
 	linux = {
 		x86_64 = { target = "x86_64-unknown-linux-gnu", ext = "so" },

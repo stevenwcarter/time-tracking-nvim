@@ -18,7 +18,10 @@ echo "✅ Build completed successfully!"
 # others are PLATFORM_MAPPINGS in lua/time-tracking-nvim/init.lua, the
 # release.yml build matrix, and the supported-platforms hint in
 # lua/time-tracking-nvim/health.lua. A new platform added here must be added
-# to all three.
+# to all three — except aarch64-unknown-linux-gnu, which is already
+# resolvable by init.lua/health.lua but not built or released by
+# release.yml, so that user hits a download failure rather than an
+# unsupported-platform message.
 OS="$(uname -s)"
 case "${OS}" in
     Linux*)
