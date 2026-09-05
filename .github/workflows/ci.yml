@@ -55,6 +55,11 @@ jobs:
         working-directory: integration_tests
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Check formatting (integration tests)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: integration_tests
+        run: cargo fmt -- --check
+
       - name: Run unit tests (main crate)
         run: cargo test
 
