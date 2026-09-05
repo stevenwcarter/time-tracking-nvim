@@ -18,6 +18,18 @@ local function echo(chunks, opts)
 	vim.api.nvim_echo(chunks, not opts.transient, {})
 end
 
+-- Echo with the plugin's name prefix already attached.
+--
+-- The prefix chunk was hand-written at 21 call sites; centralising it keeps
+-- them from drifting apart and makes the highlight group a single decision.
+local function notify(hl, chunks, opts)
+	local out = { { "time-tracking-nvim: ", hl } }
+	for _, chunk in ipairs(chunks) do
+		out[#out + 1] = chunk
+	end
+	echo(out, opts)
+end
+
 -- Plugin version (should match Cargo.toml)
 local PLUGIN_VERSION = "0.2.1"
 
@@ -639,8 +651,7 @@ local function record_version(release_info, expected_version)
 	local version_to_store = resolved_tag and (resolved_tag:gsub("^v", "")) or "unknown"
 
 	if expected_version and version_to_store ~= expected_version then
-		echo({
-			{ "time-tracking-nvim: ", "WarningMsg" },
+		notify("WarningMsg", {
 			{
 				string.format(
 					"requested v%s but the release resolved to %s; recording %s",
@@ -655,8 +666,7 @@ local function record_version(release_info, expected_version)
 
 	if not write_binary_version(version_to_store) then
 		-- Not a fatal error, just warn
-		echo({
-			{ "time-tracking-nvim: ", "WarningMsg" },
+		notify("WarningMsg", {
 			{ "Warning: Could not save version info", "Normal" },
 		})
 	end
@@ -805,21 +815,19 @@ end
 -- looked at tar or unzip: it starts downloads it may be unable to unpack.
 -- That is bughunt B28, preserved here as it stands rather than fixed.
 --
--- Returns true when the download may go ahead, or false and the echo chunks
--- describing what is missing.
+-- Returns true when the download may go ahead, or false and the notify
+-- chunks describing what is missing (always at the "ErrorMsg" highlight).
 local function have_download_tools(fatal)
 	if vim.fn.executable("curl") ~= 1 then
 		if not fatal then
 			return false,
 				{
-					{ "time-tracking-nvim: ", "ErrorMsg" },
 					{ "curl is required for auto-update but not found", "Normal" },
 					{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
 				}
 		end
 		return false,
 			{
-				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "curl is required for auto-download but not found", "Normal" },
 				{ "\nPlease install curl or download manually from: ", "Normal" },
 				{ RELEASES_URL, "Underlined" },
@@ -829,7 +837,6 @@ local function have_download_tools(fatal)
 	if fatal and vim.fn.executable("tar") ~= 1 and vim.fn.executable("unzip") ~= 1 then
 		return false,
 			{
-				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "tar or unzip is required for auto-download but not found", "Normal" },
 				{ "\nPlease install tar/unzip or download manually from: ", "Normal" },
 				{ RELEASES_URL, "Underlined" },
@@ -857,7 +864,6 @@ local function install_labels(target, binary_path)
 		load_hint = "\nPlease check the binary permissions and try restarting Neovim",
 		failed = function(message)
 			return {
-				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "Auto-download failed: ", "Normal" },
 				{ message, "ErrorMsg" },
 				{ "\n\nManual installation instructions:", "Normal" },
@@ -884,7 +890,6 @@ local function update_labels(update_reason)
 		load_hint = "\nPlease restart Neovim",
 		failed = function(message)
 			return {
-				{ "time-tracking-nvim: ", "ErrorMsg" },
 				{ "Auto-update failed: ", "Normal" },
 				{ message, "ErrorMsg" },
 				{ "\nUsing existing binary, but it may be incompatible", "WarningMsg" },
@@ -904,25 +909,23 @@ end
 -- The download is asynchronous: this returns as soon as one is under way, and
 -- everything inside the callback runs long after setup() has returned.
 local function download_then_load(target, binary_path, config, labels)
-	echo({
-		{ "time-tracking-nvim: ", "Title" },
+	notify("Title", {
 		{ labels.progress, "Normal" },
 	}, { transient = true })
 
 	local ok, missing = have_download_tools(labels.fatal)
 	if not ok then
-		echo(missing)
+		notify("ErrorMsg", missing)
 		return false
 	end
 
 	download_binary(target, binary_path, function(success, message)
 		if not success then
-			echo(labels.failed(message))
+			notify("ErrorMsg", labels.failed(message))
 			return
 		end
 
-		echo({
-			{ "time-tracking-nvim: ", "MoreMsg" },
+		notify("MoreMsg", {
 			{ labels.downloaded, "Normal" },
 		})
 
@@ -931,20 +934,17 @@ local function download_then_load(target, binary_path, config, labels)
 
 		local status, value = load_native()
 		if status == "load_failed" then
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
+			notify("ErrorMsg", {
 				{ labels.load_failed, "Normal" },
 				{ value, "ErrorMsg" },
 				{ labels.load_hint, "Normal" },
 			})
 		elseif status == "init_failed" then
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
+			notify("ErrorMsg", {
 				{ "Loaded but failed to initialize: " .. tostring(value), "Normal" },
 			})
 		else
-			echo({
-				{ "time-tracking-nvim: ", "MoreMsg" },
+			notify("MoreMsg", {
 				{ labels.loaded, "Normal" },
 			})
 		end
@@ -1003,8 +1003,7 @@ function M.setup(opts)
 		-- Deliberately no return. The tooling check failed, but an out-of-date
 		-- binary is still a binary, so the tail below loads the one on disk.
 	elseif needs_update and not config.auto_update then
-		echo({
-			{ "time-tracking-nvim: ", "WarningMsg" },
+		notify("WarningMsg", {
 			{
 				"binary version mismatch ("
 					.. update_reason
@@ -1013,8 +1012,7 @@ function M.setup(opts)
 			},
 		})
 	elseif not binary_exists then
-		echo({
-			{ "time-tracking-nvim: ", "ErrorMsg" },
+		notify("ErrorMsg", {
 			{
 				"binary not found at " .. binary_path .. ". Run :checkhealth time-tracking-nvim for detail.",
 				"Normal",
@@ -1029,8 +1027,7 @@ function M.setup(opts)
 	-- Load the native module
 	local status, value = load_native()
 	if status == "load_failed" then
-		echo({
-			{ "time-tracking-nvim: ", "ErrorMsg" },
+		notify("ErrorMsg", {
 			{ "Failed to load native module: " .. value, "Normal" },
 			{ "\nMake sure the plugin is properly installed and the dynamic library is available", "Normal" },
 		})
@@ -1038,8 +1035,7 @@ function M.setup(opts)
 	end
 
 	if status == "init_failed" then
-		echo({
-			{ "time-tracking-nvim: ", "ErrorMsg" },
+		notify("ErrorMsg", {
 			{ "Native module loaded but failed to initialize: " .. tostring(value), "Normal" },
 			{ "\nNo commands were registered. Check your time-tracking-cli configuration.", "Normal" },
 		})
@@ -1071,27 +1067,23 @@ end
 function M.download()
 	local binary_path, target = get_binary_path()
 	if not binary_path then
-		echo({
-			{ "time-tracking-nvim: ", "ErrorMsg" },
+		notify("ErrorMsg", {
 			{ target, "Normal" },
 		})
 		return
 	end
 
-	echo({
-		{ "time-tracking-nvim: ", "Title" },
+	notify("Title", {
 		{ "Manually downloading binary for " .. target .. "...", "Normal" },
 	})
 
 	download_binary(target, binary_path, function(success, message)
 		if success then
-			echo({
-				{ "time-tracking-nvim: ", "MoreMsg" },
+			notify("MoreMsg", {
 				{ "Binary downloaded successfully to " .. binary_path, "Normal" },
 			})
 		else
-			echo({
-				{ "time-tracking-nvim: ", "ErrorMsg" },
+			notify("ErrorMsg", {
 				{ "Download failed: " .. message, "Normal" },
 			})
 		end
@@ -1102,8 +1094,7 @@ end
 function M.version_info()
 	local binary_path = get_binary_path()
 	if not binary_path then
-		echo({
-			{ "time-tracking-nvim: ", "ErrorMsg" },
+		notify("ErrorMsg", {
 			{ "Cannot determine binary path", "Normal" },
 		})
 		return
