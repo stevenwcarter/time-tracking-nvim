@@ -299,16 +299,17 @@ pub fn reset_throttle_for_test() {
     LAST_RENDER.set(None);
 }
 
-/// Is a window in the current tabpage showing the preview?
-fn preview_is_open() -> Result<bool> {
-    Ok(matches!(find_preview()?, Some((_, Some(_)))))
+/// Is a window in the current tabpage showing the preview, per an already
+/// resolved [`find_preview`] result?
+fn preview_is_open_in(found: &Option<(Buffer, Option<Window>)>) -> bool {
+    matches!(found, Some((_, Some(_))))
 }
 
 /// Render the current buffer's day summary into the preview.
 ///
 /// The single read-format-write path: every entry point that shows tracking
 /// data goes through here, so the formatter arguments are specified once.
-fn render_current_buffer(config: &Config) -> Result<()> {
+fn render_current_buffer(config: &Config, found: Option<(Buffer, Option<Window>)>) -> Result<()> {
     let buffer_content = get_buffer_content()?;
     let formatted_output = config.get_formatter().day_summary(
         &buffer_content,
@@ -316,7 +317,7 @@ fn render_current_buffer(config: &Config) -> Result<()> {
         config.get_prefix(),
         config.get_suffix(),
     );
-    create_or_update_preview(&formatted_output)
+    create_or_update_preview_with(found, &formatted_output)
 }
 
 /// `:TimeTrackingToggle`: closes the preview when a window is showing it,
@@ -346,10 +347,11 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    if preview_is_open()? {
+    let found = find_preview()?;
+    if preview_is_open_in(&found) {
         close_preview()?;
     } else {
-        render_current_buffer(config)?;
+        render_current_buffer(config, found)?;
     }
 
     Ok(())
@@ -365,8 +367,9 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    if preview_is_open()? {
-        render_current_buffer(config)?;
+    let found = find_preview()?;
+    if preview_is_open_in(&found) {
+        render_current_buffer(config, found)?;
     }
 
     Ok(())
@@ -568,8 +571,19 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Resolve the preview buffer and the window showing it in a single pass.
-    let (preview, preview_win) = match find_preview()? {
+    create_or_update_preview_with(find_preview()?, output)
+}
+
+/// [`create_or_update_preview`] with the lookup already done.
+///
+/// Callers that had to probe for an open preview before deciding to render
+/// pass their own `find_preview` result straight through, instead of throwing
+/// it away and making this function repeat the scan.
+fn create_or_update_preview_with(
+    found: Option<(Buffer, Option<Window>)>,
+    output: &str,
+) -> Result<()> {
+    let (preview, preview_win) = match found {
         Some((buf, win)) => (Some(buf), win),
         None => (None, None),
     };
@@ -695,8 +709,9 @@ fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
-    if !preview_is_open()? {
-        render_current_buffer(config)?;
+    let found = find_preview()?;
+    if !preview_is_open_in(&found) {
+        render_current_buffer(config, found)?;
     }
 
     Ok(())
