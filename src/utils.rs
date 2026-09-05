@@ -186,7 +186,7 @@ pub fn get_buffer_content() -> Result<String> {
         if i > 0 {
             content.push('\n');
         }
-        content.push_str(&line.to_string());
+        content.push_str(&line.to_string_lossy());
     }
     Ok(content)
 }
