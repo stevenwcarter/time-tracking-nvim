@@ -566,9 +566,14 @@ fn open_preview_split(buf: &Buffer) -> Result<()> {
 
 /// Create or update the preview window with formatted time tracking data
 pub fn create_or_update_preview(output: &str) -> Result<()> {
-    // Bail before `find_preview` too: it calls `list_wins` on the current
-    // tabpage, which can error in the same window-less startup state the
-    // guard inside `create_or_update_preview_with` exists to absorb.
+    // Bail before `find_preview` too: it calls `preview_win_in_current_tab`,
+    // which calls `list_wins` on the current tabpage. Whether that can error
+    // in this window-less startup state isn't established anywhere in this
+    // repo, and no test exercises the path — this guard is defensive, not
+    // proven necessary. It costs one cheap `list_wins` call here to remove
+    // the question entirely; see the doc comment on
+    // `create_or_update_preview_with` for why that function needs its own
+    // copy of the same guard rather than relying on this one.
     if api::list_wins().next().is_none() {
         return Ok(());
     }
@@ -584,10 +589,18 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
 ///
 /// Every path that renders — direct or through [`render_current_buffer`] —
 /// goes through here, so the early-startup bail below has to live here too,
-/// not in [`create_or_update_preview`] alone. The bail runs after `found` is
-/// resolved: `find_preview` only enumerates buffers and windows, which is
-/// safe with no windows open, so moving the check past that lookup costs
-/// nothing.
+/// not in [`create_or_update_preview`] alone: `update_preview_fn`,
+/// `toggle_preview_fn`, and `auto_open_preview_impl` reach this function via
+/// [`render_current_buffer`] without ever calling
+/// [`create_or_update_preview`], so its bail never sees them.
+///
+/// This bail runs after `found` is resolved, i.e. after `find_preview` has
+/// already called `list_wins` once. That ordering is defensive, not proven
+/// necessary — whether `find_preview` can error with no windows open isn't
+/// established anywhere in this repo, and no test exercises that path.
+/// [`create_or_update_preview`] pays for a second, redundant `list_wins` call
+/// to rule the question out before it even reaches `find_preview`; the guard
+/// here is the one the other three callers actually depend on.
 fn create_or_update_preview_with(
     found: Option<(Buffer, Option<Window>)>,
     output: &str,
