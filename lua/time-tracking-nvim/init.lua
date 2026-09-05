@@ -60,8 +60,11 @@ local function add_to_cpath(binary_path)
 	end
 end
 
--- Target triple and library extension per OS/arch. One of four places this
--- mapping lives; see the comment on `normalize_arch` and T23's pointers.
+-- Target triple and library extension per OS/arch. This table is one of four
+-- places that encode supported platforms — the others are the case in
+-- build.sh, the release.yml build matrix, and the supported-platforms hint in
+-- lua/time-tracking-nvim/health.lua. A new platform added here must be added
+-- to all three.
 local PLATFORM_MAPPINGS = {
 	linux = {
 		x86_64 = { target = "x86_64-unknown-linux-gnu", ext = "so" },

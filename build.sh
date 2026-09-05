@@ -11,26 +11,34 @@ cargo build --release
 
 echo "✅ Build completed successfully!"
 
-# Check if we're on a supported platform and copy the library to the expected location
+# Check if we're on a supported platform and copy the library to the expected
+# location.
+#
+# This case is one of four places that encode supported platforms — the
+# others are PLATFORM_MAPPINGS in lua/time-tracking-nvim/init.lua, the
+# release.yml build matrix, and the supported-platforms hint in
+# lua/time-tracking-nvim/health.lua. A new platform added here must be added
+# to all three.
 OS="$(uname -s)"
 case "${OS}" in
-    Linux*)     
+    Linux*)
         LIB_EXT="so"
-        LIB_NAME="libtime_tracking_nvim.so"
+        LIB_PREFIX="lib"
         ;;
-    Darwin*)    
+    Darwin*)
         LIB_EXT="dylib"
-        LIB_NAME="libtime_tracking_nvim.dylib"
+        LIB_PREFIX="lib"
         ;;
     CYGWIN*|MINGW32*|MSYS*|MINGW*)
         LIB_EXT="dll"
-        LIB_NAME="time_tracking_nvim.dll"
+        LIB_PREFIX=""
         ;;
-    *)          
+    *)
         echo "❌ Unsupported platform: ${OS}"
         exit 1
         ;;
 esac
+LIB_NAME="${LIB_PREFIX}time_tracking_nvim.${LIB_EXT}"
 
 # Copy and rename the library to what Neovim expects.
 #

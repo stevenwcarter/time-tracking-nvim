@@ -44,24 +44,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # This target/os/lib_name mapping is one of four places that encode
+      # supported platforms — the others are PLATFORM_MAPPINGS in
+      # lua/time-tracking-nvim/init.lua, the case in build.sh, and the
+      # supported-platforms hint in lua/time-tracking-nvim/health.lua. A new
+      # target added here must be added to all three.
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             lib_name: libtime_tracking_nvim.so
-            nvim_name: time_tracking_nvim.so
           - target: x86_64-apple-darwin
             os: macos-latest
             lib_name: libtime_tracking_nvim.dylib
-            nvim_name: time_tracking_nvim.dylib
           - target: aarch64-apple-darwin
             os: macos-latest
             lib_name: libtime_tracking_nvim.dylib
-            nvim_name: time_tracking_nvim.dylib
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             lib_name: time_tracking_nvim.dll
-            nvim_name: time_tracking_nvim.dll
 
     steps:
       - name: Checkout code
@@ -84,9 +85,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p plugin-structure/target/release
-          
-          # Copy the built library with the correct naming for Neovim
-          cp target/${{ matrix.target }}/release/${{ matrix.lib_name }} plugin-structure/target/release/${{ matrix.nvim_name }}
+
+          # Neovim requires the library without the `lib` prefix; the matrix
+          # carries only the built name, and this strips it.
+          nvim_name="$(basename '${{ matrix.lib_name }}' | sed 's/^lib//')"
+
+          cp target/${{ matrix.target }}/release/${{ matrix.lib_name }} "plugin-structure/target/release/${nvim_name}"
 
       - name: Copy plugin files
         shell: bash

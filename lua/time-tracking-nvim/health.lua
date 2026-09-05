@@ -15,6 +15,10 @@ local function check_platform(internal)
 		platform_info, platform_err = internal.get_platform_info()
 	end
 	if not platform_info then
+		-- This hint is one of four places that encode supported platforms —
+		-- the others are PLATFORM_MAPPINGS in init.lua, the case in
+		-- build.sh, and the release.yml build matrix. A new platform added
+		-- here must be added to all three.
 		health.error(tostring(platform_err), {
 			"Supported: Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64",
 		})
