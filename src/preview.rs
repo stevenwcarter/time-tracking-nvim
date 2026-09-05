@@ -574,9 +574,10 @@ pub fn create_or_update_preview(output: &str) -> Result<()> {
         None => (None, None),
     };
 
-    let mut buf: Buffer = match preview {
-        Some(b) => b,
-        None => create_preview_buffer()?,
+    let mut buf: Buffer = if let Some(b) = preview {
+        b
+    } else {
+        create_preview_buffer()?
     };
 
     write_preview_contents(&mut buf, output)?;
