@@ -119,7 +119,7 @@ This plugin integrates with [time-tracking-cli](https://github.com/stevenwcarter
 
 ## Requirements
 
-- Neovim 0.11+ 
+- Neovim 0.12+
 - The plugin includes pre-compiled binaries for:
   - Linux x86_64
   - macOS (Intel and Apple Silicon)

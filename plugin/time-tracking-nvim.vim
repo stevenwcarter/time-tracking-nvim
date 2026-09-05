@@ -7,8 +7,10 @@ endif
 let g:loaded_time_tracking_nvim = 1
 
 " Ensure we're running on a compatible Neovim version
-if !has('nvim-0.11')
-  echoerr 'time-tracking-nvim requires Neovim 0.11 or later'
+if !has('nvim-0.12')
+  echohl WarningMsg
+  echomsg 'time-tracking-nvim requires Neovim 0.12 or later'
+  echohl None
   finish
 endif
 
