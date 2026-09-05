@@ -1,11 +1,10 @@
-use super::*;
-
-use crate::utils::{
-    PREVIEW_BUF_NAME, get_buffer_content, is_preview_buf, is_time_tracking_file,
-};
+use crate::utils::{PREVIEW_BUF_NAME, get_buffer_content, is_preview_buf, is_time_tracking_file};
+use crate::{debug_log, log_error, log_info};
 use nvim_oxi::api::{Buffer, Window, opts::OptionOptsBuilder};
+use nvim_oxi::{Result, api};
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
+use time_tracking_cli::Config;
 
 thread_local! {
     /// Cached handle to the preview buffer.
