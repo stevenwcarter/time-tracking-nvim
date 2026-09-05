@@ -683,7 +683,7 @@ pub fn auto_open_preview(config: &'static Config) -> Result<()> {
 
 /// Fallible body behind [`auto_open_preview`]: renders and opens the preview for
 /// a tracking buffer that no preview window is showing yet.
-pub fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
+fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     // No delay here: this runs on Neovim's single event-loop thread, so
     // sleeping cannot let a pending window operation complete — it is exactly
     // what prevents it. The split-during-close race is handled by the E242
@@ -707,7 +707,7 @@ pub fn auto_close_preview(config: &'static Config) -> Result<()> {
     log_and_swallow("Auto-close", auto_close_preview_impl(config))
 }
 
-pub fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
+fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
     // Always close the preview when BufLeave is triggered for a markdown file.
     // The autocommand pattern ensures we only get called for .md files.
     log_info!("Auto-closing preview (leaving markdown file)\n");
