@@ -452,8 +452,8 @@ fn register_commands(config: &'static Config) -> Result<()> {
     )?;
 
     // Name, description, handler. The description is what `:command
-    // TimeTracking<Tab>` and which-key/telescope pickers show; without it all
-    // six rendered as a blank column and were indistinguishable.
+    // TimeTracking<Tab>` and which-key/telescope pickers show; without it
+    // these all render as a blank column and are indistinguishable.
     for (name, desc, func) in [
         (
             "TimeTrackingToggle",

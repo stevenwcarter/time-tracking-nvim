@@ -59,6 +59,7 @@ require("time-tracking-nvim").setup({
   auto_download = true,              -- download the native binary if it is missing
   auto_update = true,                -- re-download when the plugin version changes
   allow_unverified_download = false, -- install a binary that has no published digest
+  github_token = nil,                -- optional GitHub token for the release-API call, to avoid rate limits
 })
 ```
 
@@ -66,6 +67,10 @@ require("time-tracking-nvim").setup({
   when the native binary is not present.
 - `auto_update` (default `true`) — re-download when the installed binary's version
   no longer matches the plugin's.
+- `github_token` (default `nil`) — sent as an `Authorization` header on the
+  GitHub **API** call only (never on the asset download itself). Falls back
+  to `$GITHUB_TOKEN`/`$GH_TOKEN` when unset. Useful behind a shared IP that
+  hits GitHub's unauthenticated 60 requests/hour limit.
 - `allow_unverified_download` (default `false`) — downloads are verified against
   the `SHA256SUMS` asset published with each release, and the archive is only
   extracted if its digest matches. Verification is fail-closed: if a release has
@@ -94,6 +99,10 @@ The plugin provides several commands:
 - `:TimeTrackingToggle` - Toggle the preview window on/off
 - `:TimeTrackingUpdate` - Manually update the preview content
 - `:TimeTrackingClose` - Close the preview window
+- `:TimeTrackingWeeklyToggle` - Toggle a weekly summary view in the preview
+- `:TimeTrackingOpenToday` - Open (creating from your template if needed) today's tracking file
+- `:TimeTrackingDownload` - Download or re-download the native binary
+- `:TimeTrackingVersion` - Show plugin/binary version info
 
 ### Default Keybindings
 
@@ -107,6 +116,14 @@ The plugin automatically:
 2. **Updates preview** in real-time as you type
 3. **Closes preview** when you leave time tracking files or quit Neovim
 4. **Manages window layout** to keep preview at 1/3 screen width
+
+### Statusline Integration
+
+`require('time-tracking-nvim').summary()` returns the current tracking
+buffer's parsed totals (`total_minutes`, `dead_time_minutes`,
+`warning_count`), or `{ is_tracking_file = false }` otherwise — for
+lualine/statusline components that want a value back rather than a
+rendered preview.
 
 ## How It Works
 
@@ -159,7 +176,7 @@ time-tracking-cli `data_directory`.
 ### Version Information
 
 ```vim
-:lua require('time-tracking-nvim').version_info()
+:TimeTrackingVersion
 ```
 
 ### Performance Issues

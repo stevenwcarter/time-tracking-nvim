@@ -28,8 +28,8 @@ require("time-tracking-nvim").setup({
 ### Manual Management
 
 #### Check Version Status
-```lua
-:lua require('time-tracking-nvim').version_info()
+```vim
+:TimeTrackingVersion
 ```
 
 This will display:
@@ -39,8 +39,8 @@ This will display:
 - Binary existence status
 
 #### Force Download/Update
-```lua
-:lua require('time-tracking-nvim').download()
+```vim
+:TimeTrackingDownload
 ```
 
 Forces a fresh download of the binary matching the current plugin version.
@@ -63,12 +63,12 @@ Forces a fresh download of the binary matching the current plugin version.
 If you see version mismatch warnings:
 ```
 Warning: Version mismatch detected!
-Run :lua require('time-tracking-nvim').download() to update
+Run :TimeTrackingDownload to update
 ```
 
 You can:
 1. Enable auto-updates: `require('time-tracking-nvim').setup({ auto_update = true })`
-2. Manually update: `:lua require('time-tracking-nvim').download()`
+2. Manually update: `:TimeTrackingDownload`
 
 #### Disable Auto-Updates
 ```lua
