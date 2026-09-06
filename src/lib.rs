@@ -28,10 +28,10 @@ pub use preview::{
     auto_close_preview, auto_open_preview, close_preview, create_or_update_preview, throttle_fire,
     toggle_preview_fn, toggle_weekly_preview_fn, update_preview_fn, update_preview_throttled,
 };
-// Test seams, not interface: see `preview::write_preview_contents_with` and
-// `preview::reset_throttle_for_test`.
+// Test seams, not interface: see `preview::write_preview_contents_with`,
+// `preview::reset_throttle_for_test` and `preview::today_for_test`.
 #[doc(hidden)]
-pub use preview::{reset_throttle_for_test, write_preview_contents_with};
+pub use preview::{reset_throttle_for_test, today_for_test, write_preview_contents_with};
 
 #[macro_export]
 macro_rules! log_info {
@@ -306,7 +306,19 @@ fn register_commands(config: &'static Config) -> Result<()> {
             // so those fire the command with no argument.
             let exclude = args.args.as_deref().and_then(|s| s.trim().parse().ok());
 
-            if !any_tracking_visible(config, exclude)? {
+            // The visibility rule belongs to the *day* view, which mirrors the
+            // buffer being edited: with no tracking file on screen there is
+            // nothing for it to mirror. The weekly view is the opposite — it
+            // aggregates the data directory precisely so the user can check
+            // "how much did I work this week" from wherever they are — so it
+            // is exempt. Without the exemption `:TimeTrackingWeeklyToggle`
+            // could not be used from a non-tracking buffer at all, since
+            // `open_preview_split`'s closing `set_current_win` fires `BufEnter`
+            // and would close the split it had just opened.
+            //
+            // `:TimeTrackingClose`, `:TimeTrackingWeeklyToggle` and `QuitPre`
+            // still close it: they call `close_preview` directly.
+            if !any_tracking_visible(config, exclude)? && !crate::preview::current_view_is_week() {
                 close_preview()?;
             }
             Ok(())

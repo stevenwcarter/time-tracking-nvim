@@ -28,7 +28,11 @@ nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", feature
     "neovim-0-12",
 ] }
 tokio = { version = "1", features = ["rt"] }
-time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+time = { version = "0.3", features = [
+    "formatting",
+    "macros",
+    "parsing",
+] }
 
 [workspace]
 exclude = ["integration_tests"]

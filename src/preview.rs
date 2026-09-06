@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime, Weekday};
 use time_tracking_cli::data_svc::{ParseSettings, WeeklySummary};
 use time_tracking_cli::{
-    Config, DataService, DisplayFormatter, format_day_with_date, get_week_dates, parse_weekday,
+    Config, DATE_FORMAT, DataService, DisplayFormatter, format_day_with_date, get_week_dates,
+    parse_weekday,
 };
 
 thread_local! {
@@ -424,17 +425,60 @@ fn render_current_buffer(config: &Config, found: Option<(Buffer, Option<Window>)
 const NO_DATA_FOR_DAY: &str = "  No time tracking data found\n";
 const NO_FILE_FOR_DAY: &str = "  No time tracking file found\n";
 
-/// Today's date, in the local zone when the process can determine one.
+/// Today's date, as **Neovim** reckons it.
 ///
-/// `now_local()` answers `Err(IndeterminateOffset)` in a multi-threaded process
-/// on Unix — `time` refuses to call the unsound libc `localtime_r` there — and
-/// Neovim plus this plugin's Tokio runtime is exactly that, so the UTC fallback
-/// is the ordinary path rather than an edge case. The two disagree only within
-/// the UTC offset of midnight.
+/// Deliberately `strftime()` through the editor rather than
+/// `time::OffsetDateTime::now_local()`. `now_local()` answers
+/// `Err(IndeterminateOffset)` in a multi-threaded process on Unix — `time`
+/// refuses to call the unsound libc `localtime_r` there — and Neovim plus this
+/// plugin's Tokio runtime is exactly that, so it would fall back to UTC on
+/// essentially every real invocation.
+///
+/// UTC is not a harmless approximation here. This one date anchors the whole
+/// seven-day array, so a UTC/local disagreement does not shift the week by
+/// hours, it shifts it by a *week* whenever the two land on opposite sides of
+/// the week-start boundary: with the default Saturday start, a US/Pacific user
+/// between 17:00 Friday and midnight would be shown next week (empty), and a
+/// UTC+10 user between midnight and 10:00 Saturday would be shown last week.
+/// Neovim's `strftime` uses the process's real `TZ`, so it gets this right.
+///
+/// The UTC fallback below is now genuinely a last resort — it is reached only
+/// if the API call or the parse fails, neither of which should happen.
 fn today() -> Date {
-    OffsetDateTime::now_local()
-        .map(|dt| dt.date())
-        .unwrap_or_else(|_| OffsetDateTime::now_utc().date())
+    api::call_function::<_, String>("strftime", ("%Y-%m-%d",))
+        .ok()
+        .and_then(|s| Date::parse(&s, &DATE_FORMAT).ok())
+        .unwrap_or_else(|| OffsetDateTime::now_utc().date())
+}
+
+/// [`today`], exposed for the integration tests.
+///
+/// `current_week_dates()` there has to anchor the week it seeds fixtures into
+/// on the exact same date [`render_weekly_view`] anchors on, or the two drift
+/// and the test silently stops testing anything. Its first version reimplemented
+/// the `now_local()`-then-UTC logic instead of calling this, which is precisely
+/// how it came to share — and therefore hide — the timezone bug the doc comment
+/// above describes.
+///
+/// Not part of the plugin's interface: `#[doc(hidden)]`, like
+/// `reset_throttle_for_test` and `write_preview_contents_with`.
+#[doc(hidden)]
+pub fn today_for_test() -> Date {
+    today()
+}
+
+/// Whether the preview is currently showing the weekly view.
+///
+/// `pub(crate)` for `lib.rs`'s `TimeTrackingMaybeCloseIfInvisible` handler: that
+/// autocommand closes the preview whenever no *tracking file* is visible, which
+/// is the right rule for the day view — it mirrors the buffer being edited — and
+/// the wrong one for the week view, whose entire point is answering "how much
+/// did I work this week" from wherever the user happens to be. Without this the
+/// weekly view could not survive being opened from a non-tracking buffer at all:
+/// `open_preview_split` ends with `set_current_win`, which itself fires
+/// `BufEnter`.
+pub(crate) fn current_view_is_week() -> bool {
+    CURRENT_VIEW.get() == PreviewView::Week
 }
 
 /// Build the weekly view's text from an already-computed [`WeeklySummary`].
@@ -544,8 +588,20 @@ pub fn render_weekly_view(
         config.get_formatter().as_ref(),
     );
 
+    // Set *before* the write, not after, and that ordering is load-bearing:
+    // `create_or_update_preview_with` opens the split, and `open_preview_split`
+    // ends with `set_current_win`, which fires `BufEnter` — which runs
+    // `TimeTrackingMaybeCloseIfInvisible`, which asks `current_view_is_week()`
+    // whether to leave this very preview alone. Setting the flag afterwards
+    // would let that autocommand close the window being opened.
+    //
+    // Rolled back on failure so a write that never landed cannot leave the
+    // state claiming `Week` over a buffer holding day text, which would freeze
+    // the throttled path for the rest of the session.
     CURRENT_VIEW.set(PreviewView::Week);
-    create_or_update_preview_with(found, &text)
+    create_or_update_preview_with(found, &text).inspect_err(|_| {
+        CURRENT_VIEW.set(PreviewView::Day);
+    })
 }
 
 /// `:TimeTrackingWeeklyToggle`: closes the preview when it is already showing
@@ -1127,6 +1183,73 @@ mod weekly_tests {
         assert!(
             text.contains(NO_FILE_FOR_DAY.trim()),
             "a day with no file says so: {text}"
+        );
+    }
+
+    /// The per-day breakdowns must be re-parsed with the *same* fence markers
+    /// the aggregate was computed with.
+    ///
+    /// This is the test for the one deliberate departure from this task's
+    /// brief, whose sketch passed `None, None` here. Without it the deviation
+    /// rests on prose alone — a citation of `show_weekly_summary_with`'s doc
+    /// comment — and a later change to `day_summary` or `ParseSettings` could
+    /// quietly restore the split with every suite still green.
+    ///
+    /// The failure it guards is not cosmetic: the aggregate at the top of the
+    /// view would count only the fenced entries while the breakdowns below it
+    /// counted every entry in the file, so the two halves of one screen would
+    /// disagree about the same day.
+    #[test]
+    fn assemble_weekly_view_reparses_each_day_within_the_configured_fences() {
+        let formatter = DefaultDisplayFormatter;
+        let prefix = "```timetracking";
+        let suffix = "```";
+        // Only `alpha` is inside the fences; `bravo` and `charlie` sit outside
+        // them and must not reach the breakdown.
+        let content = "9-10 bravo\n```timetracking\n10-11 alpha\n```\n11-12 charlie\n";
+        let summary = WeeklySummary {
+            days: vec![(
+                date!(2024 - 01 - 06),
+                content.to_owned(),
+                Some(parse_time_tracking_data(
+                    content,
+                    Some(prefix),
+                    Some(suffix),
+                )),
+            )],
+            ..Default::default()
+        };
+
+        let fenced = assemble_weekly_view(
+            WEEK_START,
+            WEEK_END,
+            &summary,
+            Some(prefix),
+            Some(suffix),
+            &formatter,
+        );
+
+        assert!(
+            fenced.contains("alpha"),
+            "the fenced entry must appear in the day breakdown: {fenced}"
+        );
+        assert!(
+            !fenced.contains("bravo"),
+            "an entry before the prefix marker must not reach the breakdown: {fenced}"
+        );
+        assert!(
+            !fenced.contains("charlie"),
+            "an entry after the suffix marker must not reach the breakdown: {fenced}"
+        );
+
+        // And the contrast that makes the point: the brief's `None, None`
+        // would have counted all three, disagreeing with an aggregate the
+        // `DataService` had fenced.
+        let unfenced = assemble_weekly_view(WEEK_START, WEEK_END, &summary, None, None, &formatter);
+        assert!(
+            unfenced.contains("bravo") && unfenced.contains("charlie"),
+            "sanity check: dropping the markers is what lets the outside-fence \
+             entries in, so this test is really pinning the markers: {unfenced}"
         );
     }
 

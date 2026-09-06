@@ -2558,21 +2558,26 @@ fn test_status_function_marks_non_tracking_buffer() {
 
 // --- W5: the weekly summary view (`:TimeTrackingWeeklyToggle`) -------------
 
-/// The seven dates the weekly view will render, resolved exactly the way
-/// `preview::render_weekly_view` resolves them: the local date when the
-/// process can determine an offset and the UTC date otherwise (which is the
-/// ordinary answer in a multi-threaded process, since `time` refuses the
-/// unsound `localtime_r` there), anchored on `Config::default()`'s week start
-/// of Saturday.
+/// The seven dates the weekly view will render, anchored on `Config::default()`'s
+/// week start of Saturday.
 ///
 /// Computed rather than hardcoded because the view is about *this* week: a
-/// fixture week would render seven "No time tracking file found" days no
-/// matter what the test seeded.
+/// fixture week would render seven "No time tracking file found" days no matter
+/// what the test seeded.
+///
+/// The anchor date comes from `today_for_test()` — the production `today()`
+/// itself — rather than being recomputed here. An earlier version of this
+/// helper reimplemented the same `now_local()`-then-UTC logic the production
+/// code used, which made the oracle share the production bug: both agreed on
+/// UTC, so the test could not see that the *user's* week was being resolved in
+/// the wrong timezone. Calling the real function means the two can never
+/// disagree again — and, when it is wrong, it is wrong somewhere a test can
+/// still catch it.
 fn current_week_dates() -> [time::Date; 7] {
-    let today = time::OffsetDateTime::now_local()
-        .map(|dt| dt.date())
-        .unwrap_or_else(|_| time::OffsetDateTime::now_utc().date());
-    time_tracking_cli::get_week_dates(&today, time::Weekday::Saturday)
+    time_tracking_cli::get_week_dates(
+        &time_tracking_nvim::today_for_test(),
+        time::Weekday::Saturday,
+    )
 }
 
 /// The day file name `DataService` will look for for `date` — the same
@@ -2813,5 +2818,150 @@ fn test_explicit_update_refreshes_the_weekly_view_rather_than_replacing_it() {
     assert!(
         text.contains("Total Working Time: 2:30"),
         ":TimeTrackingUpdate must re-aggregate the week, picking up the new day: {text}"
+    );
+}
+
+// W5 / I1: the week must be anchored on the date *Neovim* reports, not on
+// `time::OffsetDateTime::now_local()`. `now_local()` fails in a multi-threaded
+// process (which Neovim plus this plugin's Tokio runtime is) and silently
+// degrades to UTC, and because this one date anchors all seven, a UTC/local
+// disagreement across the week-start boundary shifts the whole view by a week.
+#[nvim_oxi::test]
+fn test_today_matches_the_date_neovim_itself_reports() {
+    let from_nvim: String = api::call_function("strftime", ("%Y-%m-%d",)).unwrap();
+    let today = time_tracking_nvim::today_for_test();
+
+    assert_eq!(
+        today
+            .format(&time_tracking_cli::DATE_FORMAT)
+            .expect("a Date always formats as YYYY-MM-DD"),
+        from_nvim,
+        "the weekly view's anchor date must be the editor's own local date"
+    );
+
+    // The assertion above is exact but only *observably* wrong in a timezone
+    // whose date differs from UTC's right now, so on a UTC machine it would
+    // pass even against a `now_local()`-based implementation. These two do not
+    // depend on where the test runs: the zones are 25 hours apart, so their
+    // local dates always differ, while anything reading UTC answers the same
+    // date for both. POSIX `TZ` offsets rather than named zones, so no tzdata
+    // is required; the sign is inverted by the POSIX spec, i.e. `XXX-14` is
+    // UTC+14.
+    let original: String = api::call_function("getenv", ("TZ",)).unwrap_or_default();
+
+    api::command("let $TZ = 'XXX-14'").unwrap();
+    let far_east = time_tracking_nvim::today_for_test();
+    api::command("let $TZ = 'XXX+11'").unwrap();
+    let far_west = time_tracking_nvim::today_for_test();
+
+    api::command(&format!("let $TZ = '{original}'")).unwrap();
+
+    assert_ne!(
+        far_east, far_west,
+        "the anchor date must follow the editor's timezone; reading UTC \
+         instead answers the same date on both sides of the date line"
+    );
+}
+
+// W5 / I3: the weekly view must survive `TimeTrackingMaybeCloseIfInvisible`.
+//
+// That autocommand fires on BufEnter/TabEnter/WinClosed and closes the preview
+// whenever no *tracking file* is visible. That rule is right for the day view,
+// which mirrors the buffer being edited -- and wrong for the week view, whose
+// point is answering "how much did I work this week" from wherever the user
+// happens to be. Without the `current_view_is_week()` exemption the weekly view
+// could not be opened from a non-tracking buffer at all: `open_preview_split`
+// ends with `set_current_win`, which itself fires BufEnter.
+//
+// Unlike the other W5 tests this registers the *real* autocommands via
+// `time_tracking_with_config`, because the bug lives in the wiring rather than
+// in any function those tests call directly.
+#[nvim_oxi::test]
+fn test_weekly_view_survives_switching_to_a_non_tracking_buffer() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+
+    // The real wiring: BufEnter/TabEnter -> TimeTrackingMaybeCloseIfInvisible.
+    time_tracking_with_config(config_static).unwrap();
+
+    // Open the weekly view from a buffer that is *not* a tracking file, which
+    // is the whole point of the command being data-directory scoped. Merely
+    // getting a preview back here already exercises the BufEnter that
+    // `open_preview_split`'s `set_current_win` fires.
+    let outside_dir = TempDir::new().unwrap();
+    let mut other = api::create_buf(true, false).unwrap();
+    other
+        .set_name(outside_dir.path().join("notes.md").to_str().unwrap())
+        .unwrap();
+    api::set_current_buf(&other).unwrap();
+    assert!(
+        !is_buf_time_tracking_file(&other, config_static).unwrap(),
+        "the fixture buffer must not be a tracking file"
+    );
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "the weekly view must open from a non-tracking buffer, and must not be \
+         closed again by the BufEnter that opening the split fires"
+    );
+
+    // And an explicit BufEnter -- the event a user generates by switching
+    // buffers -- must leave it alone too.
+    api::exec2("doautocmd BufEnter", &Default::default()).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "BufEnter in a non-tracking buffer must not close the weekly view"
+    );
+
+    // The exemption is scoped to the weekly view: an explicit close still
+    // closes it, so the user is never stuck with a preview they cannot dismiss.
+    api::command("TimeTrackingClose").unwrap();
+    assert!(
+        !preview_buffer_exists(),
+        ":TimeTrackingClose must still close the weekly view"
+    );
+}
+
+// W5 / I3, the other side: the exemption must not leak to the day view. A day
+// preview left open with no tracking file visible is the exact behaviour
+// `TimeTrackingMaybeCloseIfInvisible` exists to prevent.
+#[nvim_oxi::test]
+fn test_day_view_is_still_closed_when_no_tracking_file_is_visible() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    let md = create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(md.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_with_config(config_static).unwrap();
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    assert!(preview_buffer_exists(), "the day view must open");
+
+    // Switch away to a buffer outside the data directory. BufEnter fires, and
+    // with no tracking file visible the day view must go.
+    let outside_dir = TempDir::new().unwrap();
+    let mut other = api::create_buf(true, false).unwrap();
+    other
+        .set_name(outside_dir.path().join("notes.md").to_str().unwrap())
+        .unwrap();
+    api::set_current_buf(&other).unwrap();
+    api::exec2("doautocmd BufEnter", &Default::default()).unwrap();
+
+    assert!(
+        !preview_buffer_exists(),
+        "the day view must still be closed when no tracking file is visible"
     );
 }
