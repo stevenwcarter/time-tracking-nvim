@@ -6,6 +6,7 @@
 //! through the `error` key of the dictionary it returns, because throwing out of
 //! the plugin entry point aborts Neovim on macOS (see the comment there).
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 
@@ -77,17 +78,85 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+thread_local! {
+    /// The last error message `catch_nvim_panic` reported.
+    ///
+    /// A failure here can recur on every keystroke (bughunt B7's repro:
+    /// `TextChangedI` re-invoking a command against a stale window handle),
+    /// so an unconditional `err_writeln` on every call would spam
+    /// `:messages` with an identical line per keystroke. This dedupes
+    /// *identical consecutive* messages only — a different failure, or the
+    /// same one recurring after something else succeeded in between, is
+    /// always reported. Mirrors `LAST_OUTPUT`/`last_output_matches` in
+    /// `preview.rs`, applied to error text instead of preview content.
+    static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Report `msg` via `api::err_writeln`, unless it is identical to the last
+/// message this reported.
+fn report_error_deduped(msg: &str) {
+    let already_reported = LAST_ERROR.with(|cell| cell.borrow().as_deref() == Some(msg));
+    if already_reported {
+        return;
+    }
+    api::err_writeln(msg);
+    LAST_ERROR.with(|cell| *cell.borrow_mut() = Some(msg.to_owned()));
+}
+
+/// Clear the dedup latch after a successful call, so a failure that recurs
+/// *after* a success in between is reported again rather than staying
+/// silenced by an unrelated earlier failure.
+fn clear_last_error() {
+    LAST_ERROR.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Run `f`, catching both a panic and a propagated `Err`, and report either
+/// through `:messages` — but never return `Err` from this function itself.
+///
+/// Returning `Err` from a `Function::from_fn` callback hits
+/// `push_error -> lua_error`, which under `LUAJIT_UNWIND_EXTERNAL`
+/// (macOS/arm64) throws a C++ exception through a `nounwind` frame and
+/// aborts Neovim — the exact failure mode `time_tracking_nvim`'s own entry
+/// point was already fixed to avoid. Every command in `register_commands`
+/// is wrapped in this function, so this is the one place that decision has
+/// to hold for all of them (this also gives `:TimeTrackingToggle`/
+/// `:TimeTrackingUpdate` a diagnostic message on failure, for the first
+/// time — bughunt B7 / whats-next W6).
 fn catch_nvim_panic<F>(f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
-    panic::catch_unwind(AssertUnwindSafe(f))
-        .map_err(|payload| {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(Ok(())) => {
+            clear_last_error();
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            report_error_deduped(&format!("[time-tracking-nvim] {}", e));
+            Ok(())
+        }
+        Err(payload) => {
             let msg = panic_message(payload);
-            api::err_writeln(&format!("[time-tracking-nvim] panic: {}", msg));
-            nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(msg))
-        })
-        .flatten()
+            report_error_deduped(&format!("[time-tracking-nvim] panic: {}", msg));
+            Ok(())
+        }
+    }
+}
+
+// Test seams, not interface: let the integration tests exercise the
+// panic/Err-swallowing behavior directly, the same way
+// `write_preview_contents_with` and `reset_throttle_for_test` are exposed.
+#[doc(hidden)]
+pub fn catch_nvim_panic_for_test<F>(f: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    catch_nvim_panic(f)
+}
+
+#[doc(hidden)]
+pub fn clear_last_error_for_test() {
+    clear_last_error();
 }
 
 /// Plugin to provide time tracking previews while editing in Neovim.

@@ -4,6 +4,7 @@ use std::io::Write;
 use tempfile::TempDir;
 use time_tracking_cli::Config;
 use time_tracking_nvim::utils::*;
+use time_tracking_nvim::{catch_nvim_panic_for_test, clear_last_error_for_test};
 
 // Helper function to create a test config with a temporary directory
 fn create_test_config_with_temp_dir() -> (Config, TempDir) {
@@ -2145,4 +2146,126 @@ fn test_a_failed_preview_write_restores_nomodifiable_and_leaves_the_cache_clean(
     );
 
     cleanup_preview_buffers();
+}
+
+#[nvim_oxi::test]
+fn test_catch_nvim_panic_never_returns_err_for_a_propagated_error() {
+    clear_last_error_for_test();
+
+    let result = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "synthetic stale-handle failure".to_string(),
+        )))
+    });
+
+    assert!(
+        result.is_ok(),
+        "catch_nvim_panic must never return Err: {:?}",
+        result
+    );
+
+    let messages: String = api::eval("execute('messages')").unwrap();
+    assert!(
+        messages.contains("synthetic stale-handle failure"),
+        "the swallowed error must still be reported via :messages, got: {messages}"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_catch_nvim_panic_never_returns_err_for_a_panic() {
+    clear_last_error_for_test();
+
+    let result = catch_nvim_panic_for_test(|| {
+        panic!("synthetic panic for B7 coverage");
+    });
+
+    assert!(
+        result.is_ok(),
+        "catch_nvim_panic must never return Err, even on a caught panic: {:?}",
+        result
+    );
+
+    let messages: String = api::eval("execute('messages')").unwrap();
+    assert!(
+        messages.contains("synthetic panic for B7 coverage"),
+        "the caught panic must still be reported via :messages, got: {messages}"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_catch_nvim_panic_dedupes_identical_consecutive_messages() {
+    clear_last_error_for_test();
+
+    let before: String = api::eval("execute('messages')").unwrap();
+    let before_count = before.matches("dedup-marker-xyz").count();
+
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "dedup-marker-xyz".to_string(),
+        )))
+    });
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "dedup-marker-xyz".to_string(),
+        )))
+    });
+
+    let after: String = api::eval("execute('messages')").unwrap();
+    let after_count = after.matches("dedup-marker-xyz").count();
+
+    assert_eq!(
+        after_count - before_count,
+        1,
+        "an identical consecutive failure must be reported once, not per call"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_catch_nvim_panic_reports_a_different_message_right_after_a_dupe() {
+    clear_last_error_for_test();
+
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "first-marker-abc".to_string(),
+        )))
+    });
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "second-marker-def".to_string(),
+        )))
+    });
+
+    let messages: String = api::eval("execute('messages')").unwrap();
+    assert!(messages.contains("first-marker-abc"));
+    assert!(messages.contains("second-marker-def"));
+}
+
+#[nvim_oxi::test]
+fn test_catch_nvim_panic_reports_the_same_message_again_after_a_success_in_between() {
+    clear_last_error_for_test();
+
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "recurring-marker-ghi".to_string(),
+        )))
+    });
+    let _ = catch_nvim_panic_for_test(|| Ok(()));
+
+    let before: String = api::eval("execute('messages')").unwrap();
+    let before_count = before.matches("recurring-marker-ghi").count();
+
+    let _ = catch_nvim_panic_for_test(|| {
+        Err(nvim_oxi::Error::Api(nvim_oxi::api::Error::Other(
+            "recurring-marker-ghi".to_string(),
+        )))
+    });
+
+    let after: String = api::eval("execute('messages')").unwrap();
+    let after_count = after.matches("recurring-marker-ghi").count();
+
+    assert_eq!(
+        after_count - before_count,
+        1,
+        "a failure recurring after an intervening success must be reported again"
+    );
 }
