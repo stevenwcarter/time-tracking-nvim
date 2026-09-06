@@ -28,6 +28,12 @@ local tt = require("time-tracking-nvim")
 -- release-API response) runs the whole synchronous stretch that follows it
 -- -- including the archive fetch's vim.system call -- before control returns
 -- to the test.
+--
+-- os.getenv is also stubbed, scoped to GITHUB_TOKEN/GH_TOKEN: production
+-- resolve_github_token() falls back to those two, so left alone a
+-- contributor's own shell (GH_TOKEN is common for `gh` CLI scripting) would
+-- leak an ambient token into the "no token configured" cases. Every other
+-- environment variable still resolves through the real os.getenv.
 
 local function upvalue(fn, name)
   local i = 1
@@ -103,7 +109,22 @@ local function start()
     system = vim.system,
     schedule = vim.schedule,
     tempname = vim.fn.tempname,
+    getenv = os.getenv,
   }
+
+  -- resolve_github_token falls back to these two when opts.github_token is
+  -- nil. Left unstubbed, a contributor's own shell (GH_TOKEN is common for
+  -- `gh` CLI scripting) would leak into "no token configured" cases and
+  -- make them fail outside this ambient state -- exactly the class of
+  -- externality spec_download.lua/spec_setup.lua stub out for vim.system,
+  -- vim.fn.tempname/executable, uv.os_uname, etc. Every other name falls
+  -- through to the real os.getenv unchanged.
+  os.getenv = function(name)
+    if name == "GITHUB_TOKEN" or name == "GH_TOKEN" then
+      return nil
+    end
+    return saved.getenv(name)
+  end
 
   vim.system = function(cmd, _opts, cb)
     if not cb then
@@ -137,6 +158,7 @@ local function start()
     vim.system = saved.system
     vim.schedule = saved.schedule
     vim.fn.tempname = saved.tempname
+    os.getenv = saved.getenv
     vim.fn.delete(root, "rf")
   end
 
