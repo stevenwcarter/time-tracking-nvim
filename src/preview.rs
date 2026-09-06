@@ -68,13 +68,35 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
     PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
 }
 
-/// Clear both preview caches and mark the preview dismissed.
+/// Clear both preview caches.
 ///
 /// Called from every path in `close_preview` that actually closes or swaps
-/// out the preview window.
+/// out the preview window. Deliberately does **not** touch
+/// [`PREVIEW_DISMISSED`]: `close_preview` is also the target of
+/// `TimeTrackingMaybeCloseIfInvisible`, which fires routinely on
+/// `BufEnter`/`TabEnter`/`WinClosed` whenever no tracking file is currently
+/// visible — an ordinary, frequent event, not a user request to stop seeing
+/// the preview. Setting the dismissal flag here would make the very first
+/// such auto-close permanently suppress auto-reopen for the rest of the
+/// session. The two paths that *are* an explicit dismissal —
+/// `:TimeTrackingClose` and the close half of `:TimeTrackingToggle` — set
+/// [`PREVIEW_DISMISSED`] themselves, right after calling [`close_preview`]
+/// (see [`mark_preview_dismissed`] and `toggle_preview_fn`).
 fn clear_preview_state_on_close() {
     set_cached_preview_buf(None);
     set_last_output(None);
+}
+
+/// Mark the preview dismissed by the user, so [`auto_open_preview_impl`]
+/// leaves it closed until an explicit `:TimeTrackingToggle`/`:TimeTrackingUpdate`
+/// clears the flag again.
+///
+/// `pub(crate)`, not private: `:TimeTrackingClose`'s handler in `lib.rs` calls
+/// [`close_preview`] and then this, since `close_preview` itself must stay
+/// dismissal-neutral (see [`clear_preview_state_on_close`]). `toggle_preview_fn`,
+/// in this module, sets [`PREVIEW_DISMISSED`] directly instead of going through
+/// this function.
+pub(crate) fn mark_preview_dismissed() {
     PREVIEW_DISMISSED.set(true);
 }
 
@@ -371,6 +393,7 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     let found = find_preview()?;
     if preview_is_open_in(&found) {
         close_preview()?;
+        PREVIEW_DISMISSED.set(true);
     } else {
         PREVIEW_DISMISSED.set(false);
         render_current_buffer(config, found)?;
@@ -654,10 +677,19 @@ fn create_or_update_preview_with(
     Ok(())
 }
 
-/// Closes the preview window — wherever it lives — clears both preview
-/// caches, and marks the preview dismissed (see [`PREVIEW_DISMISSED`]) so
-/// `auto_open_preview_impl` leaves it closed until the user explicitly asks
-/// for it again via `:TimeTrackingToggle`/`:TimeTrackingUpdate`.
+/// Closes the preview window — wherever it lives — and clears both preview
+/// caches.
+///
+/// Deliberately does **not** mark the preview dismissed (see
+/// [`PREVIEW_DISMISSED`]/[`clear_preview_state_on_close`]): this function is
+/// also the target of `TimeTrackingMaybeCloseIfInvisible`, which fires
+/// routinely on `BufEnter`/`TabEnter`/`WinClosed` whenever no tracking file is
+/// currently visible, and the (separately broken) `QuitPre` autocommand
+/// (bughunt B19) — neither of those is the user asking to stop seeing the
+/// preview. Callers for whom this close genuinely *is* a dismissal —
+/// `:TimeTrackingClose` (`lib.rs`) and the close half of `:TimeTrackingToggle`
+/// (below) — call [`mark_preview_dismissed`] (or set [`PREVIEW_DISMISSED`]
+/// directly) themselves, immediately after this call succeeds.
 ///
 /// The window scan here is [`preview_win_anywhere`], not the tab-scoped probe
 /// [`find_preview`] uses, for two reasons.
@@ -678,12 +710,7 @@ fn create_or_update_preview_with(
 /// When the preview is the only window left it is not closed at all:
 /// `nvim_win_close` refuses the last window with E444, so a fresh listed buffer
 /// is swapped into it instead. [`clear_preview_state_on_close`] runs on every
-/// path, including the early return taken when no preview is open — so every
-/// caller of this function, including the invisibility-driven auto-close in
-/// `TimeTrackingMaybeCloseIfInvisible` and the (separately broken) `QuitPre`
-/// autocommand, counts as a dismissal. See the W2 spec for why that is not a
-/// scope problem: this is the one function that actually closes/swaps the
-/// preview window, by design.
+/// path, including the early return taken when no preview is open.
 pub fn close_preview() -> Result<()> {
     let preview_win = match find_preview_buf()? {
         Some(buf) => preview_win_anywhere(&buf)?,

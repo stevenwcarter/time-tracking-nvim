@@ -2337,11 +2337,12 @@ fn preview_buffer_exists() -> bool {
     api::list_bufs().any(|b| is_preview_buf(&b).unwrap_or(false))
 }
 
-// W2: a preview closed via an explicit `close_preview()` (the shared function
-// behind `:TimeTrackingClose` and the close half of `:TimeTrackingToggle`)
-// must stay closed across the ordinary auto-open path — re-entering a
-// tracking buffer must not resurrect it — until the user explicitly asks for
-// it again via `:TimeTrackingToggle`.
+// W2: a preview closed via an explicit `:TimeTrackingToggle` (the close
+// branch of `toggle_preview_fn`, which marks the preview dismissed right
+// after `close_preview()` succeeds) must stay closed across the ordinary
+// auto-open path — re-entering a tracking buffer must not resurrect it —
+// until the user explicitly asks for it again via another
+// `:TimeTrackingToggle`.
 #[nvim_oxi::test]
 fn test_closed_preview_does_not_auto_reopen_until_explicitly_reopened() {
     time_tracking_nvim::reset_throttle_for_test();
@@ -2357,21 +2358,60 @@ fn test_closed_preview_does_not_auto_reopen_until_explicitly_reopened() {
     time_tracking_nvim::auto_open_preview(config_static).unwrap();
     assert!(preview_buffer_exists(), "preview should auto-open");
 
-    close_preview().unwrap();
+    // The close half of :TimeTrackingToggle: the preview is open, so this
+    // closes it AND marks it dismissed.
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
     assert!(!preview_buffer_exists(), "preview should be closed");
 
     // Simulate the auto-open path firing again for the same tracking
-    // buffer -- it must NOT reopen a dismissed preview.
+    // buffer -- it must NOT reopen a preview dismissed via :TimeTrackingToggle.
     time_tracking_nvim::auto_open_preview(config_static).unwrap();
     assert!(
         !preview_buffer_exists(),
         "a dismissed preview must not auto-reopen"
     );
 
-    // An explicit :TimeTrackingToggle asks for it again.
+    // A second, explicit :TimeTrackingToggle asks for it again.
     time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
     assert!(
         preview_buffer_exists(),
         "an explicit toggle must reopen a dismissed preview"
+    );
+}
+
+// W2 regression guard: `close_preview()` itself must stay dismissal-neutral,
+// because it is also the target of `TimeTrackingMaybeCloseIfInvisible`, which
+// fires routinely on BufEnter/TabEnter/WinClosed whenever no tracking file is
+// currently visible -- an everyday event (e.g. switching to check a different
+// file), not a user request to stop seeing the preview. If `close_preview()`
+// set the dismissal flag itself, the very first such routine auto-close of a
+// session would permanently suppress auto-reopen thereafter, silently
+// breaking the plugin's core automatic open/close loop.
+#[nvim_oxi::test]
+fn test_routine_auto_close_does_not_suppress_the_next_auto_open() {
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(preview_buffer_exists(), "preview should auto-open");
+
+    // Simulate TimeTrackingMaybeCloseIfInvisible's routine auto-close: it
+    // calls close_preview() directly, with no dismissal side effect.
+    close_preview().unwrap();
+    assert!(!preview_buffer_exists(), "preview should be closed");
+
+    // Switching back to a tracking buffer (auto-open firing again) must
+    // reopen it -- this routine close was never a dismissal.
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "a routine, non-dismissing auto-close must not block the next auto-open"
     );
 }

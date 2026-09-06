@@ -267,8 +267,19 @@ fn register_commands(config: &'static Config) -> Result<()> {
     let auto_close =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_close_preview(config)));
 
-    let close_preview_cmd =
-        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(close_preview));
+    // `:TimeTrackingClose` is an explicit user request to stop seeing the
+    // preview, unlike `close_preview`'s other callers (the invisibility-driven
+    // auto-close and the QuitPre autocommand), so it marks the preview
+    // dismissed itself right after the close succeeds — see
+    // `preview::mark_preview_dismissed`'s doc comment for why `close_preview`
+    // does not do this on every caller's behalf.
+    let close_preview_cmd = Function::from_fn(move |_: CommandArgs| {
+        catch_nvim_panic(|| {
+            close_preview()?;
+            crate::preview::mark_preview_dismissed();
+            Ok(())
+        })
+    });
 
     let maybe_close_if_invisible = Function::from_fn(move |args: CommandArgs| {
         catch_nvim_panic(move || {
