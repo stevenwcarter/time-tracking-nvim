@@ -280,6 +280,31 @@ pub fn buffer_status(buffer_content: &str, config: &Config) -> Dictionary {
     ])
 }
 
+/// The configured data directory's resolution status, as a `Dictionary` for
+/// exposure to Lua (`:checkhealth`'s data-directory check).
+///
+/// Reuses `resolved_data_dir` rather than re-resolving independently, so this
+/// can never disagree with what `is_buf_time_tracking_file` actually uses to
+/// classify buffers.
+pub fn data_directory_status_dict(config: &Config) -> Dictionary {
+    let configured = config.get_data_directory().unwrap_or("<unset>").to_string();
+
+    match resolved_data_dir(config) {
+        Some(path) => Dictionary::from_iter([
+            ("configured", nvim_oxi::Object::from(configured)),
+            ("resolved", nvim_oxi::Object::from(true)),
+            (
+                "canonical_path",
+                nvim_oxi::Object::from(path.to_string_lossy().into_owned()),
+            ),
+        ]),
+        None => Dictionary::from_iter([
+            ("configured", nvim_oxi::Object::from(configured)),
+            ("resolved", nvim_oxi::Object::from(false)),
+        ]),
+    }
+}
+
 /// Name given to the preview scratch buffer.
 ///
 /// Neovim reports buffer names as absolute paths, so every consumer matches on
@@ -351,4 +376,21 @@ mod tests {
         let dict = buffer_status("# just a heading, no time entries\n", &config);
         assert_eq!(dict.get("total_minutes"), Some(&Object::from(0i64)));
     }
+
+    // No plain `#[test]` covers `data_directory_status_dict` here (unlike
+    // `buffer_status` above): it unconditionally calls `resolved_data_dir`,
+    // which — on *either* branch, since both arms of its `match` are part of
+    // the same compiled function — pulls in `warn_data_dir_unresolved`'s
+    // `api::get_vvar` call. That's a real Neovim API call, resolvable only
+    // when linked into a live Neovim host; a plain `#[test]` binary has none,
+    // so linking fails with "undefined symbol: nvim_get_vvar" (confirmed
+    // empirically, reproduced from a clean build) even for the
+    // directory-exists branch that never runs that call at runtime. This
+    // matches this file's existing precedent — no data-directory-resolution
+    // path is covered by a plain `#[test]` anywhere in this module; they're
+    // all `#[nvim_oxi::test]` in `integration_tests` (e.g.
+    // `test_missing_data_directory_returns_false_and_does_not_panic`). Both
+    // branches of `data_directory_status_dict` are covered there instead:
+    // `test_data_directory_status_resolves_a_real_directory` and
+    // `test_data_directory_status_reports_unresolved_for_a_missing_directory`.
 }

@@ -2556,6 +2556,100 @@ fn test_status_function_marks_non_tracking_buffer() {
     );
 }
 
+// W10: `:checkhealth` reports whether the configured data directory resolves.
+// `data_directory_status_dict` reuses `resolved_data_dir` rather than
+// re-resolving independently, so it can never disagree with what
+// `is_buf_time_tracking_file` uses to classify buffers.
+#[nvim_oxi::test]
+fn test_data_directory_status_resolves_a_real_directory() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let dict = time_tracking_nvim::utils::data_directory_status_dict(&config);
+
+    assert_eq!(
+        dict.get("resolved"),
+        Some(&nvim_oxi::Object::from(true)),
+        "an existing, configured directory must resolve: {:?}",
+        dict
+    );
+    assert!(
+        dict.get("canonical_path").is_some(),
+        "a resolved directory must report its canonical path: {:?}",
+        dict
+    );
+    let _ = temp_dir; // keep the TempDir alive for the duration of the assertions
+}
+
+// The sibling of the test above, for a data directory that does not exist at
+// all. This is the case a plain `#[test]` in `src/utils.rs` cannot exercise:
+// `resolved_data_dir`'s error arm calls `warn_data_dir_unresolved`, which
+// calls the real `api::get_vvar` -- a call that links only against a live
+// Neovim host, which a plain unit-test binary does not have (confirmed
+// empirically: linking one that reaches this branch fails with "undefined
+// symbol: nvim_get_vvar"). `test_missing_data_directory_returns_false_and_
+// does_not_panic` above covers the same "misconfigured data directory" case
+// for buffer classification; this one covers it for the health-check surface.
+#[nvim_oxi::test]
+fn test_data_directory_status_reports_unresolved_for_a_missing_directory() {
+    let config = Config {
+        data_directory: Some("/does/not/exist/at/all".to_string()),
+        ..Default::default()
+    };
+
+    let dict = time_tracking_nvim::utils::data_directory_status_dict(&config);
+
+    assert_eq!(
+        dict.get("resolved"),
+        Some(&nvim_oxi::Object::from(false)),
+        "a nonexistent directory must not resolve: {:?}",
+        dict
+    );
+    assert_eq!(
+        dict.get("configured"),
+        Some(&nvim_oxi::Object::from("/does/not/exist/at/all")),
+        "the unresolved case must still echo back what was configured: {:?}",
+        dict
+    );
+    assert_eq!(
+        dict.get("canonical_path"),
+        None,
+        "an unresolved directory has no canonical path to report: {:?}",
+        dict
+    );
+}
+
+// W10: the `data_directory_status` Function `time_tracking_with_config` wires
+// into its returned Dictionary -- the same object Lua's
+// `require("time_tracking_nvim").data_directory_status()` (called from
+// health.lua's check_data_directory) would invoke. Mirrors
+// `test_status_function_on_the_returned_dictionary_is_callable` above.
+#[nvim_oxi::test]
+fn test_data_directory_status_function_on_the_returned_dictionary_is_callable() {
+    use nvim_oxi::conversion::FromObject;
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let dict = time_tracking_with_config(config_static).unwrap();
+    let data_directory_status_obj = dict.get("data_directory_status").cloned().expect(
+        "time_tracking_with_config's Dictionary must carry a \"data_directory_status\" key",
+    );
+
+    let data_directory_status_fn: nvim_oxi::Function<(), nvim_oxi::Dictionary> =
+        FromObject::from_object(data_directory_status_obj)
+            .expect("\"data_directory_status\" must be a callable Function");
+
+    let result = data_directory_status_fn
+        .call(())
+        .expect("calling data_directory_status() must not error");
+    assert_eq!(
+        result.get("resolved"),
+        Some(&nvim_oxi::Object::from(true)),
+        "data_directory_status() must report the configured temp dir as resolved: {:?}",
+        result
+    );
+    let _ = temp_dir; // keep the TempDir alive for the duration of the assertions
+}
+
 // --- W5: the weekly summary view (`:TimeTrackingWeeklyToggle`) -------------
 
 /// The seven dates the weekly view will render, anchored on `Config::default()`'s

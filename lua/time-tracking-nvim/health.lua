@@ -121,6 +121,24 @@ local function check_native_module(internal)
 	end
 end
 
+-- Data directory. Needs the native module loaded to call this, so it runs
+-- after check_native_module and reports nothing if that failed.
+local function check_data_directory()
+	local ok, native = pcall(require, "time_tracking_nvim")
+	if not ok or type(native) ~= "table" or not native.data_directory_status then
+		return
+	end
+
+	local status = native.data_directory_status()
+	if status.resolved then
+		health.ok("Data directory resolves: " .. tostring(status.canonical_path))
+	else
+		health.error("Data directory does not resolve: " .. tostring(status.configured), {
+			"The preview will not open for any file until this is fixed",
+		})
+	end
+end
+
 -- Commands
 local function check_commands()
 	if vim.fn.exists(":TimeTrackingToggle") == 2 then
@@ -149,7 +167,8 @@ end
 -- Reports, in order: platform support, the native library's presence and size,
 -- whether the plugin and binary versions agree, whether the binary directory is
 -- on package.cpath, whether the native module loads and initializes, whether the
--- commands are registered, and which of curl/tar/unzip auto-download can use.
+-- configured data directory resolves, whether the commands are registered, and
+-- which of curl/tar/unzip auto-download can use.
 --
 -- The first two checks return early on failure: with no supported platform or
 -- no readable library, every later check would only restate the same problem.
@@ -172,6 +191,7 @@ function M.check()
 	check_versions(internal)
 	check_cpath(internal)
 	check_native_module(internal)
+	check_data_directory()
 	check_commands()
 	check_external_tools()
 end

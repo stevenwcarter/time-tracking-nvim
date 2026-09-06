@@ -249,7 +249,18 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
         Ok(crate::utils::buffer_status(&content, config))
     });
 
-    let api = Dictionary::from_iter([("status", nvim_oxi::Object::from(status))]);
+    let data_directory_status =
+        Function::<(), Dictionary>::from_fn(move |_: ()| -> Result<Dictionary> {
+            Ok(crate::utils::data_directory_status_dict(config))
+        });
+
+    let api = Dictionary::from_iter([
+        ("status", nvim_oxi::Object::from(status)),
+        (
+            "data_directory_status",
+            nvim_oxi::Object::from(data_directory_status),
+        ),
+    ]);
     Ok(api)
 }
 
