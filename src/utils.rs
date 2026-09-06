@@ -337,4 +337,18 @@ mod tests {
         assert_eq!(dict.get("dead_time_minutes"), Some(&Object::from(0i64)));
         assert_eq!(dict.get("warning_count"), Some(&Object::from(0i64)));
     }
+
+    #[test]
+    fn buffer_status_reports_zero_totals_for_content_with_no_time_entries() {
+        let config = Config {
+            data_directory: Some("/tmp/does-not-matter-for-this-test".to_string()),
+            ..Default::default()
+        };
+
+        let dict = buffer_status("", &config);
+        assert_eq!(dict.get("total_minutes"), Some(&Object::from(0i64)));
+
+        let dict = buffer_status("# just a heading, no time entries\n", &config);
+        assert_eq!(dict.get("total_minutes"), Some(&Object::from(0i64)));
+    }
 }

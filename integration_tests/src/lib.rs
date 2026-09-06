@@ -2505,3 +2505,52 @@ fn test_status_function_on_the_returned_dictionary_is_callable() {
         result
     );
 }
+
+// W3: the sibling of the test above, for the non-tracking branch of the same
+// seam -- `status()`'s `if !is_time_tracking_file(config)? { ... }` guard in
+// `lib.rs`, not just the pre-existing `is_time_tracking_file` helper it calls.
+// `test_status_marks_non_tracking_buffer` above only exercises that helper;
+// this one calls the real `status` Function and checks the shape it actually
+// produces for a buffer outside the data directory.
+#[nvim_oxi::test]
+fn test_status_function_marks_non_tracking_buffer() {
+    use nvim_oxi::conversion::FromObject;
+
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let other_dir = TempDir::new().unwrap();
+    let outside_path = other_dir.path().join("notes.md");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(outside_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let dict = time_tracking_with_config(config_static).unwrap();
+    let status_obj = dict
+        .get("status")
+        .cloned()
+        .expect("time_tracking_with_config's Dictionary must carry a \"status\" key");
+
+    let status_fn: nvim_oxi::Function<(), nvim_oxi::Dictionary> =
+        FromObject::from_object(status_obj).expect("\"status\" must be a callable Function");
+
+    let result = status_fn.call(()).expect("calling status() must not error");
+    assert_eq!(
+        result.get("is_tracking_file"),
+        Some(&nvim_oxi::Object::from(false)),
+        "status() must report is_tracking_file: false for a buffer outside the data directory: {:?}",
+        result
+    );
+    assert_eq!(
+        result.get("total_minutes"),
+        None,
+        "the non-tracking branch must not carry parsed totals it never computed: {:?}",
+        result
+    );
+    assert_eq!(
+        result.get("dead_time_minutes"),
+        None,
+        "the non-tracking branch must not carry parsed totals it never computed: {:?}",
+        result
+    );
+}
