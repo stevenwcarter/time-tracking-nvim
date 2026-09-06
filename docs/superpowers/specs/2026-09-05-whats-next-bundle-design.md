@@ -528,12 +528,17 @@ direct too, matching feature flags already enabled upstream.)
 - **W1** depends on buffer classification never changing without a
   `BufFilePost`/`BufDelete`/`BufWipeout` firing (stated above; test pins the
   rename case).
-- **W2** depends on `close_preview()` remaining the single function that
-  actually closes/swaps the preview window — if a future change adds a
-  second path that closes it without going through `close_preview()`, that
-  path would bypass the dismissal flag. Grep for direct `win.close()` calls
-  on a preview window outside `close_preview()` before extending this area
-  later.
+- **W2** (as actually shipped — revised during implementation from this
+  section's original text) depends on dismissal-marking staying scoped to
+  exactly two call sites — `:TimeTrackingClose`'s command handler (via
+  `preview::mark_preview_dismissed()`) and `toggle_preview_fn`'s close
+  branch — and NOT living inside `close_preview()` itself. `close_preview()`
+  is also called by `TimeTrackingMaybeCloseIfInvisible`'s routine,
+  visibility-driven auto-close; marking dismissal there would suppress the
+  next auto-open after the first ordinary buffer switch of a session. If a
+  future change adds a third call site meant to represent an *intentional*
+  user close, it must call `mark_preview_dismissed()` explicitly — it will
+  not get this for free from `close_preview()`.
 - **W5** depends on the day-file naming convention (`YYYY-MM-DD.md` under
   `data_directory`) staying in sync between this plugin and
   `time-tracking-cli` — already an existing coupling (`is_buf_time_tracking_file`
