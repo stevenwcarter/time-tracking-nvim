@@ -182,7 +182,7 @@ Add `thread_local! { static PREVIEW_DISMISSED: Cell<bool> = ...; }`.
   or after it — either order is fine since both are cheap; put the dismissal
   check first since it's a plain flag read with no I/O.
 
-**Design note — `close_preview()` is shared with `QuitPre`.** `:TimeTrackingClose`
+**Design note — `close_preview()` is shared with `QuitPre`.** ~~`:TimeTrackingClose`
 is both the user-facing command and the target of the (separately broken,
 **not fixed in this bundle**) `QuitPre * TimeTrackingClose` autocommand
 (bughunt B19). Setting the dismissal flag unconditionally inside
@@ -191,7 +191,18 @@ is both the user-facing command and the target of the (separately broken,
 "closes and nothing ever brings it back" (per bughunt's own repro), which is
 observably identical to "dismissed until the user explicitly reopens." No
 change in scope is needed here to accommodate B19 — this is a documented
-consequence, not an oversight.
+consequence, not an oversight.~~
+
+**Struck out: this reasoning was wrong**, and the whole-branch review caught
+it. B19's damage *was* self-healing before this bundle — the next
+`VimEnter,BufWinEnter *.md TimeTrackingAutoOpen` reopened the preview, because
+no dismissal state existed for it to trip over. Letting `QuitPre` mark
+dismissal would therefore have turned "any `:q` closes the preview until you
+open another tracking file" into "any `:q` anywhere disables auto-open for
+every tracking file for the rest of the session" — a much worse regression, not
+a no-op. As shipped: `close_preview()` stays dismissal-neutral (see the
+Invariants section), and `QuitPre` is wired to `TimeTrackingAutoClose`, which
+closes without marking dismissal. B19 is left exactly as it was.
 
 **Not in scope:** `update_preview_fn` never opens a new preview window (only
 renders into one already open), so dismissal never needs to gate it.
@@ -529,16 +540,39 @@ direct too, matching feature flags already enabled upstream.)
   `BufFilePost`/`BufDelete`/`BufWipeout` firing (stated above; test pins the
   rename case).
 - **W2** (as actually shipped — revised during implementation from this
-  section's original text) depends on dismissal-marking staying scoped to
-  exactly two call sites — `:TimeTrackingClose`'s command handler (via
-  `preview::mark_preview_dismissed()`) and `toggle_preview_fn`'s close
-  branch — and NOT living inside `close_preview()` itself. `close_preview()`
+  section's original text, and again after the whole-branch review) depends
+  on dismissal-marking staying scoped to exactly **three** call sites, each
+  of them a command the user typed by name asking to stop seeing the preview:
+
+  1. `:TimeTrackingClose`'s command handler in `lib.rs`, via
+     `preview::mark_preview_dismissed()`.
+  2. `toggle_preview_fn`'s close branch (`:TimeTrackingToggle`), setting
+     `PREVIEW_DISMISSED` directly.
+  3. `toggle_weekly_preview_fn`'s close branch
+     (`:TimeTrackingWeeklyToggle`), added by W5/Task 7, likewise setting
+     `PREVIEW_DISMISSED` directly.
+
+  The flag is cleared by the *open* half of either toggle, and by nothing
+  else — in particular **not** by `:TimeTrackingUpdate`, which never opens a
+  preview and so has no open half.
+
+  Dismissal must NOT live inside `close_preview()` itself. `close_preview()`
   is also called by `TimeTrackingMaybeCloseIfInvisible`'s routine,
-  visibility-driven auto-close; marking dismissal there would suppress the
-  next auto-open after the first ordinary buffer switch of a session. If a
-  future change adds a third call site meant to represent an *intentional*
-  user close, it must call `mark_preview_dismissed()` explicitly — it will
-  not get this for free from `close_preview()`.
+  visibility-driven auto-close, and (through `auto_close_preview`) by the
+  `QuitPre` autocommand; marking dismissal there would suppress the next
+  auto-open after the first ordinary buffer switch — or the first `:q`
+  anywhere — of a session. For the same reason `QuitPre` is wired to
+  `TimeTrackingAutoClose`, not `TimeTrackingClose`: **this section's original
+  text claimed routing `QuitPre` through the dismissing path was harmless
+  because B19 already "closes and nothing ever brings it back", and that was
+  wrong.** Pre-bundle, B19 was self-healing — the next `VimEnter,BufWinEnter
+  *.md TimeTrackingAutoOpen` reopened the preview, because no dismissal state
+  existed at all. With dismissal, that same routing would have made any `:q`
+  anywhere permanently disable auto-open for the rest of the session, for
+  every tracking file. B19 itself stays out of scope; the compounding does
+  not. If a future change adds a fourth call site meant to represent an
+  *intentional* user close, it must call `mark_preview_dismissed()`
+  explicitly — it will not get this for free from `close_preview()`.
 - **W5** depends on the day-file naming convention (`YYYY-MM-DD.md` under
   `data_directory`) staying in sync between this plugin and
   `time-tracking-cli` — already an existing coupling (`is_buf_time_tracking_file`

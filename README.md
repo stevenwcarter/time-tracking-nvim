@@ -116,6 +116,23 @@ The plugin automatically:
 2. **Updates preview** in real-time as you type
 3. **Closes preview** when you leave time tracking files or quit Neovim
 4. **Manages window layout** to keep preview at 1/3 screen width
+5. **Stays closed once you dismiss it.** `:TimeTrackingClose`, and the close
+   half of `:TimeTrackingToggle`/`:TimeTrackingWeeklyToggle`, are treated as
+   "I don't want to see this right now": the preview will not auto-reopen on
+   later buffer or tab switches until you ask for it again with one of the
+   toggle commands. (Automatic closes — leaving tracking files, or quitting a
+   window — do *not* count as dismissing it, so the preview still comes back
+   on its own the next time you open a tracking file.)
+6. **Refreshes when the file changes on disk**, not just when you type — so a
+   day file edited by another editor, a sync client, or a script shows up in
+   the preview without you touching the buffer.
+
+> **Note:** to notice those on-disk changes, the plugin registers
+> `autocmd FocusGained,BufEnter *.md checktime`. That applies to **every**
+> markdown buffer you focus or enter, not only tracking files, so Neovim's own
+> "file changed on disk" handling (an automatic reload, or its warning prompt
+> when the buffer has unsaved changes) can now appear for markdown files in
+> general, where it previously would not have.
 
 ### Statusline Integration
 
