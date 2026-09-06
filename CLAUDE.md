@@ -32,7 +32,7 @@ cargo test
 
 The plugin has two layers:
 
-**Lua layer** (`lua/time-tracking-nvim/init.lua`): Entry point for `require("time-tracking-nvim").setup()`. Handles platform detection, binary download/auto-update from GitHub releases, semantic version comparison, and adds the binary directory to Lua's cpath for module loading.
+**Lua layer** (`lua/time-tracking-nvim/init.lua`): Entry point for `require("time-tracking-nvim").setup()`. Handles platform detection, binary download/auto-update from GitHub releases, semantic version comparison, and adds the binary directory to Lua's cpath for module loading. Also registers `TimeTrackingDownload`/`TimeTrackingVersion` directly via `vim.api.nvim_create_user_command`, unconditionally — unlike the Rust-registered commands, these work even if the native module fails to load.
 
 **Rust core** (`src/`):
 - `lib.rs` — Plugin entry point (`#[nvim_oxi::plugin]`). Registers 11 user commands: 6 public (`TimeTrackingToggle`, `TimeTrackingUpdate`, `TimeTrackingAutoOpen`, `TimeTrackingClose`, `TimeTrackingWeeklyToggle`, `TimeTrackingOpenToday`) and 5 internal/not-meant-to-be-invoked-directly (`TimeTrackingUpdateThrottled`, `TimeTrackingThrottleFire`, `TimeTrackingAutoClose`, `TimeTrackingMaybeCloseIfInvisible`, `TimeTrackingInvalidateBufCache`), and sets up autocommands for auto-open on VimEnter/BufWinEnter, live updates on TextChanged/TextChangedI, auto-close on QuitPre, and window layout preservation. It also returns a `Dictionary` from plugin init that exposes `status`/`data_directory_status` functions (previously always empty) for Lua callers such as `summary()`.
