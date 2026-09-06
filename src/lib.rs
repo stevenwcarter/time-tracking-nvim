@@ -293,6 +293,24 @@ fn register_commands(config: &'static Config) -> Result<()> {
             .build(),
     )?;
 
+    let invalidate_buf_cache = Function::from_fn(move |args: CommandArgs| {
+        catch_nvim_panic(move || {
+            if let Some(handle) = args.args.as_deref().and_then(|s| s.trim().parse().ok()) {
+                crate::utils::invalidate_buf_classification(handle);
+            }
+            Ok(())
+        })
+    });
+
+    api::create_user_command(
+        "TimeTrackingInvalidateBufCache",
+        invalidate_buf_cache,
+        &CreateCommandOpts::builder()
+            .desc("(internal) Drop the cached tracking-file classification for one buffer")
+            .nargs(CommandNArgs::ZeroOrOne)
+            .build(),
+    )?;
+
     // Name, description, handler. The description is what `:command
     // TimeTracking<Tab>` and which-key/telescope pickers show; without it all
     // six rendered as a blank column and were indistinguishable.
@@ -358,6 +376,14 @@ fn register_autocommands() -> Result<()> {
     api::command("augroup TimeTrackingNvim")?;
     api::command("autocmd!")?;
     api::command("autocmd BufEnter,TabEnter * TimeTrackingMaybeCloseIfInvisible")?;
+    // `<abuf>` is not textually substituted into a Lua/Rust-callback user
+    // command's arguments the way it is for a legacy Ex-command body (e.g.
+    // `bwipeout! <abuf>`) — a Lua-backed command like this one receives the
+    // literal string `"<abuf>"`. Route it through `expand()` instead, which
+    // does perform the substitution regardless of callback vs. Ex-command.
+    api::command(
+        "autocmd BufFilePost,BufDelete,BufWipeout * execute 'TimeTrackingInvalidateBufCache ' . expand('<abuf>')",
+    )?;
     api::command("autocmd WinClosed * TimeTrackingMaybeCloseIfInvisible <amatch>")?;
     api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdateThrottled")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;

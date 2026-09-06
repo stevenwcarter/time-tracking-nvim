@@ -6,6 +6,8 @@
 //! share and the buffer read the renderers use.
 
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, Once},
@@ -18,6 +20,35 @@ use nvim_oxi::{
 use time_tracking_cli::Config;
 
 use crate::log_error;
+
+thread_local! {
+    /// Per-buffer memoization of `is_buf_time_tracking_file`'s result.
+    ///
+    /// Keyed on `(buffer handle, configured data directory)` rather than the
+    /// handle alone: production runs against a single `'static Config` for
+    /// the plugin's whole lifetime (see `DATA_DIR_MEMO`), but the integration
+    /// tests build several `Config`s in one process and, in
+    /// `test_data_dir_memo_does_not_leak_between_configs`, deliberately
+    /// re-check the *same* buffer against two of them — keying on the handle
+    /// alone would let the first config's answer leak into the second's.
+    /// Invalidated by `invalidate_buf_classification`, wired to
+    /// `BufFilePost`/`BufDelete`/`BufWipeout` in `lib.rs` — a buffer's
+    /// classification depends only on its name/extension and the configured
+    /// directory, and only the former two change via those events.
+    static BUF_CLASSIFICATION: RefCell<HashMap<(i32, String), bool>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Drop the cached classification for one buffer, under any configured
+/// directory it was cached against.
+///
+/// Called from the `TimeTrackingInvalidateBufCache` command, itself wired to
+/// `BufFilePost`/`BufDelete`/`BufWipeout` in `lib.rs`.
+pub fn invalidate_buf_classification(handle: i32) {
+    BUF_CLASSIFICATION.with(|cache| {
+        cache.borrow_mut().retain(|(h, _), _| *h != handle);
+    });
+}
 
 /// Guards the data-directory warning so the per-keystroke `TextChanged` path
 /// cannot spam `:messages` with the same line on every keypress.
@@ -139,6 +170,32 @@ pub fn is_win_time_tracking_file(win: &Window, config: &Config) -> Result<bool> 
 
 /// Checks if the provided buffer is a time tracking file (markdown file in data directory)
 pub fn is_buf_time_tracking_file(current_buffer: &Buffer, config: &Config) -> Result<bool> {
+    let handle = current_buffer.handle();
+    let key = (handle, config.get_data_directory().unwrap_or("").to_owned());
+
+    if let Some(cached) = BUF_CLASSIFICATION.with(|cache| cache.borrow().get(&key).copied()) {
+        return Ok(cached);
+    }
+
+    let result = is_buf_time_tracking_file_uncached(current_buffer, config)?;
+
+    // A `false` caused by a currently-unresolvable data directory must not be
+    // cached: `resolved_data_dir` deliberately doesn't cache that miss either
+    // (see its doc comment) so the plugin recovers on the very next call once
+    // the directory is created/mounted, without a restart. A `true` result
+    // implies the directory did resolve, so this only ever skips caching a
+    // negative.
+    if result || resolved_data_dir(config).is_some() {
+        BUF_CLASSIFICATION.with(|cache| {
+            cache.borrow_mut().insert(key, result);
+        });
+    }
+
+    Ok(result)
+}
+
+/// Checks if the provided buffer is a time tracking file (markdown file in data directory)
+fn is_buf_time_tracking_file_uncached(current_buffer: &Buffer, config: &Config) -> Result<bool> {
     let buffer_name = current_buffer.get_name()?;
     let Ok(buffer_name_str) = buffer_name.to_str() else {
         return Ok(false);

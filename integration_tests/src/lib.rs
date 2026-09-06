@@ -522,6 +522,7 @@ fn test_time_tracking_with_config_creates_commands() {
         "TimeTrackingAutoClose nargs=0 handler=true".to_string(),
         "TimeTrackingAutoOpen nargs=0 handler=true".to_string(),
         "TimeTrackingClose nargs=0 handler=true".to_string(),
+        "TimeTrackingInvalidateBufCache nargs=? handler=true".to_string(),
         "TimeTrackingMaybeCloseIfInvisible nargs=? handler=true".to_string(),
         "TimeTrackingThrottleFire nargs=0 handler=true".to_string(),
         "TimeTrackingToggle nargs=0 handler=true".to_string(),
@@ -531,7 +532,7 @@ fn test_time_tracking_with_config_creates_commands() {
 
     assert_eq!(
         registered, expected,
-        "exactly these eight TimeTracking* commands, with these argument counts, \
+        "exactly these nine TimeTracking* commands, with these argument counts, \
          must be registered and bound to a handler"
     );
 }
@@ -2268,4 +2269,64 @@ fn test_catch_nvim_panic_reports_the_same_message_again_after_a_success_in_betwe
         1,
         "a failure recurring after an intervening success must be reported again"
     );
+}
+
+#[nvim_oxi::test]
+fn test_buf_classification_cache_survives_across_repeated_calls() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+
+    assert!(is_buf_time_tracking_file(&buf, &config).unwrap());
+    // A second call must return the same answer from the cache, not just
+    // recompute correctly — this pins that the cache path is exercised at
+    // all, not only that classification stays correct.
+    assert!(is_buf_time_tracking_file(&buf, &config).unwrap());
+}
+
+#[nvim_oxi::test]
+fn test_buf_classification_cache_invalidates_on_rename() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    // Each `#[nvim_oxi::test]` runs its own fresh, isolated Neovim process, so
+    // the BufFilePost -> TimeTrackingInvalidateBufCache wiring this test
+    // exercises only exists once this plugin instance registers it itself.
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    time_tracking_with_config(config_static).unwrap();
+
+    let other_dir = TempDir::new().unwrap();
+
+    let outside_path = other_dir.path().join("notes.md");
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(outside_path.to_str().unwrap()).unwrap();
+    assert!(!is_buf_time_tracking_file(&buf, config_static).unwrap());
+
+    // Rename the buffer into the data directory; BufFilePost fires and must
+    // invalidate the cached (false) classification.
+    let inside_path = temp_dir.path().join("2024-01-01.md");
+    api::set_current_buf(&buf).unwrap();
+    api::command(&format!("keepalt saveas {}", inside_path.to_str().unwrap())).unwrap();
+
+    assert!(
+        is_buf_time_tracking_file(&buf, config_static).unwrap(),
+        "a renamed buffer must not serve a stale pre-rename classification"
+    );
+}
+
+#[nvim_oxi::test]
+fn test_buf_classification_cache_invalidates_on_wipeout() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let file_path = create_test_file(temp_dir.path(), "2024-01-02.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    let handle = buf.handle();
+    assert!(is_buf_time_tracking_file(&buf, &config).unwrap());
+
+    api::command(&format!("bwipeout! {}", handle)).unwrap();
+
+    // No assertion is possible on the wiped buffer itself; this pins that
+    // wiping it doesn't panic or leave the invalidation command failing.
+    invalidate_buf_classification(handle);
 }
