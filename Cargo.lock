@@ -964,6 +964,7 @@ version = "0.2.2"
 dependencies = [
  "nvim-oxi",
  "time-tracking-cli",
+ "tokio",
 ]
 
 [[package]]
