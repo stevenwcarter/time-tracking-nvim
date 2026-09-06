@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 
 use nvim_oxi::api::types::{CommandArgs, CommandNArgs};
 use nvim_oxi::schedule;
@@ -16,7 +17,8 @@ use nvim_oxi::{
     Dictionary, Function, Result,
     api::{self, opts::CreateCommandOpts},
 };
-use time_tracking_cli::Config;
+use time_tracking_cli::data_svc::ParseSettings;
+use time_tracking_cli::{Config, DataService};
 
 use crate::utils::any_tracking_visible;
 
@@ -277,6 +279,15 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
 ///
 /// An existing file is opened as-is and never re-seeded from the template:
 /// only the *absence* of the file triggers template expansion.
+///
+/// The file path and the data directory are resolved through a hermetic
+/// [`DataService`] (`get_file_path`/`ensure_data_dir`) rather than hand-rolled
+/// `dir.join(...)`/`create_dir_all(...)` calls, the same way
+/// [`crate::preview::render_weekly_view`] builds its own — that is the
+/// established idiom in this codebase for exactly this pairing of directory
+/// resolution and file naming, and `time_tracking_cli` already owns it, so
+/// duplicating it here would be a second, independent implementation that can
+/// silently drift from upstream.
 pub fn open_today_fn(config: &'static Config) -> Result<()> {
     let Some(data_dir) = config.get_data_directory() else {
         log_error!("[time-tracking-nvim] no data directory configured");
@@ -284,15 +295,26 @@ pub fn open_today_fn(config: &'static Config) -> Result<()> {
     };
 
     let today = crate::preview::today();
-    let date_str = today
-        .format(&time_tracking_cli::DATE_FORMAT)
-        .unwrap_or_else(|_| today.to_string());
 
-    let dir = std::path::Path::new(data_dir);
-    let file_path = dir.join(format!("{date_str}.md"));
+    let data_service = DataService::new_with_dir(
+        DataService::DEFAULT_CACHE_TIMEOUT_SECONDS,
+        PathBuf::from(data_dir),
+        ParseSettings::from_config(config),
+    );
+
+    let file_path = match crate::async_rt::block_on(data_service.get_file_path(today)) {
+        Ok(path) => path,
+        Err(e) => {
+            log_error!(
+                "[time-tracking-nvim] could not resolve today's file path: {}",
+                e
+            );
+            return Ok(());
+        }
+    };
 
     if !file_path.exists() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
+        if let Err(e) = crate::async_rt::block_on(data_service.ensure_data_dir()) {
             log_error!(
                 "[time-tracking-nvim] could not create data directory: {}",
                 e
