@@ -963,6 +963,7 @@ name = "time-tracking-nvim"
 version = "0.2.2"
 dependencies = [
  "nvim-oxi",
+ "time",
  "time-tracking-cli",
  "time-tracking-parser",
  "tokio",

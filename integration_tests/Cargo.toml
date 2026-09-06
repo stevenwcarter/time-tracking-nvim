@@ -14,7 +14,7 @@ nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", feature
 time-tracking-nvim = { path = ".." }
 time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
 tempfile = "3.8"
-time = { version = "0.3", features = ["local-offset"] }
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 
 [build-dependencies]
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [

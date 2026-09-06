@@ -3,8 +3,13 @@ use crate::{debug_log, log_error, log_info};
 use nvim_oxi::api::{Buffer, Window, opts::OptionOptsBuilder};
 use nvim_oxi::{Result, api};
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use time_tracking_cli::Config;
+use time::{Date, OffsetDateTime, Weekday};
+use time_tracking_cli::data_svc::{ParseSettings, WeeklySummary};
+use time_tracking_cli::{
+    Config, DataService, DisplayFormatter, format_day_with_date, get_week_dates, parse_weekday,
+};
 
 thread_local! {
     /// Cached handle to the preview buffer.
@@ -42,6 +47,37 @@ thread_local! {
     static PREVIEW_DISMISSED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Which of the two renders the preview is currently showing.
+///
+/// The preview buffer is a single scratch buffer shared by both views, so the
+/// only record of what is in it is this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PreviewView {
+    /// The current buffer's day summary — every autocommand-driven path.
+    Day,
+    /// The whole week aggregated from the data directory —
+    /// `:TimeTrackingWeeklyToggle`.
+    Week,
+}
+
+thread_local! {
+    /// Which view [`create_or_update_preview_with`] last wrote.
+    ///
+    /// Two paths read it. The keystroke-driven throttle
+    /// ([`update_preview_throttled`]) returns early while the week is up, so
+    /// typing neither replaces an open weekly view with the day view on the
+    /// next keystroke nor re-aggregates seven files on typing cadence. An
+    /// explicitly typed `:TimeTrackingUpdate` ([`update_preview_fn`]) instead
+    /// refreshes *whichever* view is showing, because a user who asks for a
+    /// refresh by name means the thing they can see.
+    ///
+    /// Reset to [`PreviewView::Day`] by [`clear_preview_state_on_close`],
+    /// alongside the other two preview caches: with no preview on screen there
+    /// is no week view to protect, and a `Week` left latched there would keep
+    /// the throttle returning early after the next auto-open.
+    static CURRENT_VIEW: Cell<PreviewView> = const { Cell::new(PreviewView::Day) };
+}
+
 fn set_last_output(output: Option<String>) {
     LAST_OUTPUT.with(|cell| *cell.borrow_mut() = output);
 }
@@ -68,7 +104,7 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
     PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
 }
 
-/// Clear both preview caches.
+/// Clear both preview caches, and the record of which view was showing.
 ///
 /// Called from every path in `close_preview` that actually closes or swaps
 /// out the preview window. Deliberately does **not** touch
@@ -85,6 +121,7 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
 fn clear_preview_state_on_close() {
     set_cached_preview_buf(None);
     set_last_output(None);
+    CURRENT_VIEW.set(PreviewView::Day);
 }
 
 /// Mark the preview dismissed by the user, so [`auto_open_preview_impl`]
@@ -241,6 +278,15 @@ pub fn update_preview_throttled(config: &'static Config) -> Result<()> {
         return Ok(());
     }
 
+    // The weekly view is not a function of the buffer being typed into, and
+    // re-aggregating seven day files on typing cadence would be the most
+    // expensive thing this plugin does. Leave it alone: an explicitly typed
+    // `:TimeTrackingUpdate` still refreshes it (see `update_preview_fn`), and
+    // `:TimeTrackingWeeklyToggle` still closes it.
+    if CURRENT_VIEW.get() == PreviewView::Week {
+        return Ok(());
+    }
+
     if THROTTLE_PENDING.get() {
         // A booked render is always due within `THROTTLE` of `LAST_RENDER`, so
         // twice that with no render having happened means no timer is coming.
@@ -360,7 +406,174 @@ fn render_current_buffer(config: &Config, found: Option<(Buffer, Option<Window>)
         config.get_prefix(),
         config.get_suffix(),
     );
+    CURRENT_VIEW.set(PreviewView::Day);
     create_or_update_preview_with(found, &formatted_output)
+}
+
+/// What the weekly view shows for a day whose file exists but holds no time
+/// entries, and for a day with no file at all.
+///
+/// Spelled out here rather than taken from the formatter on purpose:
+/// `DisplayFormatter` exposes these two messages only as
+/// `display_no_data_found`/`display_no_file_found`, which `println!` to the
+/// process's stdout and return nothing — unlike every other part of the weekly
+/// render, they have no String-returning counterpart to borrow. The wording is
+/// `PlainDisplayFormatter`'s, the undecorated common denominator of the three
+/// bundled formatters' phrasings (the default one prefixes an emoji, the
+/// markdown one italicises).
+const NO_DATA_FOR_DAY: &str = "  No time tracking data found\n";
+const NO_FILE_FOR_DAY: &str = "  No time tracking file found\n";
+
+/// Today's date, in the local zone when the process can determine one.
+///
+/// `now_local()` answers `Err(IndeterminateOffset)` in a multi-threaded process
+/// on Unix — `time` refuses to call the unsound libc `localtime_r` there — and
+/// Neovim plus this plugin's Tokio runtime is exactly that, so the UTC fallback
+/// is the ordinary path rather than an edge case. The two disagree only within
+/// the UTC offset of midnight.
+fn today() -> Date {
+    OffsetDateTime::now_local()
+        .map(|dt| dt.date())
+        .unwrap_or_else(|_| OffsetDateTime::now_utc().date())
+}
+
+/// Build the weekly view's text from an already-computed [`WeeklySummary`].
+///
+/// Pure: all the disk work happens in [`render_weekly_view`], which calls this
+/// with the result.
+///
+/// Deliberately assembles the text out of the *String-returning* half of
+/// [`DisplayFormatter`] (`weekly_header`, `weekly_totals`, `weekly_warnings`,
+/// `weekly_projects`, `daily_breakdowns_header`, `day_header`, `day_summary`)
+/// rather than calling `time_tracking_cli::display::show_weekly_summary_with`.
+/// That renderer drives the `display_*` twins, every one of which `println!`s
+/// to the process's stdout — invisible from inside Neovim, and returning
+/// nothing a preview buffer could be filled with.
+///
+/// `prefix`/`suffix` bound the time entries inside each day file and must be
+/// the same markers the [`DataService`] that produced `summary` parsed with:
+/// otherwise the aggregate at the top and the per-day breakdowns below it are
+/// two views of the same files taken through different fences.
+/// `show_weekly_summary_with`'s own doc comment makes the same point, and
+/// [`render_weekly_view`] satisfies it by deriving both from one `Config`.
+fn assemble_weekly_view(
+    week_start_label: &str,
+    week_end_label: &str,
+    summary: &WeeklySummary,
+    prefix: Option<&str>,
+    suffix: Option<&str>,
+    formatter: &dyn DisplayFormatter,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&formatter.weekly_header(week_start_label, week_end_label));
+    out.push_str(&formatter.weekly_totals(summary.total_minutes, summary.dead_time_minutes));
+
+    // Both sections render as the empty string when their input is empty, so
+    // these guards are about the *separators* around them, not about the
+    // sections themselves.
+    if !summary.warnings.is_empty() {
+        out.push_str(&formatter.weekly_warnings(&summary.warnings));
+    }
+    if !summary.projects.is_empty() {
+        out.push_str(&formatter.weekly_projects(&summary.projects));
+    }
+
+    out.push_str(&formatter.daily_breakdowns_header());
+    for (date, content, data) in &summary.days {
+        out.push_str(&formatter.day_header(&format_day_with_date(date)));
+        match data {
+            Some(parsed) if parsed.total_minutes > 0 => {
+                out.push_str(&formatter.day_summary(content, "  ", prefix, suffix));
+            }
+            Some(_) => out.push_str(NO_DATA_FOR_DAY),
+            None => out.push_str(NO_FILE_FOR_DAY),
+        }
+    }
+
+    out
+}
+
+/// Render the current week's summary into the preview.
+///
+/// Builds its own hermetic [`DataService`] with `new_with_dir` rather than
+/// reaching for the `DataService::get()` singleton. That singleton resolves
+/// both its data directory and its parse markers through `Config::get()`,
+/// which parses the *real process argv* on first use — and here that argv is
+/// Neovim's, so the global config would at best pick up flags meant for the
+/// editor and at worst fail to parse them at all. This plugin has never
+/// touched either singleton (see `Config::try_get_no_args()` in `lib.rs`) and
+/// must not start now.
+pub fn render_weekly_view(
+    config: &'static Config,
+    found: Option<(Buffer, Option<Window>)>,
+) -> Result<()> {
+    let Some(data_dir) = config.get_data_directory() else {
+        return create_or_update_preview_with(
+            found,
+            "No data directory configured.\nSet `data_directory` in the time-tracking config.",
+        );
+    };
+
+    // Fall back silently, not loudly: `Config::get_week_start_day` already
+    // answers "Saturday" for an unset value, so only an explicitly invalid
+    // config entry reaches the error arm — and this function is also reachable
+    // from the timer-driven `throttle_fire`, where a message per render would
+    // be noise rather than help.
+    let week_start_day = parse_weekday(config.get_week_start_day()).unwrap_or(Weekday::Saturday);
+    let week_dates = get_week_dates(&today(), week_start_day);
+
+    // One `Config` feeds both the service's parse settings and the markers
+    // `assemble_weekly_view` re-parses the per-day breakdowns with, so the
+    // aggregate and the breakdowns cannot disagree about where a day file's
+    // entries begin and end.
+    let data_service = DataService::new_with_dir(
+        DataService::DEFAULT_CACHE_TIMEOUT_SECONDS,
+        PathBuf::from(data_dir),
+        ParseSettings::from_config(config),
+    );
+
+    let summary = crate::async_rt::block_on(data_service.get_weekly_summary(&week_dates))
+        .map_err(|e| nvim_oxi::Error::Api(api::Error::Other(e.to_string())))?;
+
+    let text = assemble_weekly_view(
+        &format_day_with_date(&week_dates[0]),
+        &format_day_with_date(&week_dates[6]),
+        &summary,
+        config.get_prefix(),
+        config.get_suffix(),
+        config.get_formatter().as_ref(),
+    );
+
+    CURRENT_VIEW.set(PreviewView::Week);
+    create_or_update_preview_with(found, &text)
+}
+
+/// `:TimeTrackingWeeklyToggle`: closes the preview when it is already showing
+/// the weekly view, otherwise renders the current week into it.
+///
+/// Deliberately does not require the current buffer to be a tracking file, as
+/// [`toggle_preview_fn`] does: the weekly view aggregates the *data directory*,
+/// so there is nothing about the current buffer for it to depend on.
+///
+/// The close half is an explicit dismissal, exactly like `:TimeTrackingToggle`'s
+/// and `:TimeTrackingClose`'s, so it sets [`PREVIEW_DISMISSED`] right after the
+/// close — see [`clear_preview_state_on_close`] for why [`close_preview`] does
+/// not do that on every caller's behalf.
+pub fn toggle_weekly_preview_fn(config: &'static Config) -> Result<()> {
+    let found = find_preview()?;
+    if preview_is_open_in(&found) && CURRENT_VIEW.get() == PreviewView::Week {
+        close_preview()?;
+        PREVIEW_DISMISSED.set(true);
+    } else {
+        // Reached both when no preview is open and when one is open showing
+        // the day view: in the latter case this swaps the day view for the
+        // week view in place, which is what a second view command on an
+        // already-open preview should do.
+        PREVIEW_DISMISSED.set(false);
+        render_weekly_view(config, found)?;
+    }
+
+    Ok(())
 }
 
 /// `:TimeTrackingToggle`: closes the preview when a window is showing it,
@@ -402,11 +615,18 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     Ok(())
 }
 
-/// `:TimeTrackingUpdate`, and the render the throttle books: rebuilds the day
-/// summary in the preview.
+/// `:TimeTrackingUpdate`, and the render the throttle books: rebuilds whichever
+/// view the preview is currently showing.
 ///
 /// Does nothing unless the current buffer is a tracking file *and* a preview
 /// window is already open — it never opens one.
+///
+/// Dispatching on [`CURRENT_VIEW`] rather than always rendering the day summary
+/// is what keeps `:TimeTrackingUpdate` a *refresh*: rendering the day view
+/// unconditionally would make it silently replace an open weekly view.
+/// [`update_preview_throttled`] returns before it ever reaches here while the
+/// week is up, so the week is only ever re-aggregated on an explicit request —
+/// or once, harmlessly, by a render booked before the user switched views.
 pub fn update_preview_fn(config: &'static Config) -> Result<()> {
     if !is_time_tracking_file(config)? {
         return Ok(());
@@ -414,7 +634,10 @@ pub fn update_preview_fn(config: &'static Config) -> Result<()> {
 
     let found = find_preview()?;
     if preview_is_open_in(&found) {
-        render_current_buffer(config, found)?;
+        match CURRENT_VIEW.get() {
+            PreviewView::Day => render_current_buffer(config, found)?,
+            PreviewView::Week => render_weekly_view(config, found)?,
+        }
     }
 
     Ok(())
@@ -815,4 +1038,122 @@ fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
     // The autocommand pattern ensures we only get called for .md files.
     log_info!("Auto-closing preview (leaving markdown file)\n");
     close_preview()
+}
+
+#[cfg(test)]
+mod weekly_tests {
+    use super::*;
+    use time::macros::date;
+    use time_tracking_cli::DefaultDisplayFormatter;
+    use time_tracking_cli::data_svc::{WeeklyProject, WeeklySummary};
+    use time_tracking_parser::parse_time_tracking_data;
+
+    const WEEK_START: &str = "Saturday 2024-01-06";
+    const WEEK_END: &str = "Friday 2024-01-12";
+
+    /// An empty week — no data anywhere — must still render its header and
+    /// totals, and must not emit a warnings or projects section at all.
+    #[test]
+    fn assemble_weekly_view_omits_empty_warnings_and_projects_sections() {
+        let formatter = DefaultDisplayFormatter;
+        let summary = WeeklySummary::default();
+
+        let text = assemble_weekly_view(WEEK_START, WEEK_END, &summary, None, None, &formatter);
+
+        // `DefaultDisplayFormatter::weekly_warnings` heads its block
+        // "⚠️  WEEKLY WARNINGS" and `weekly_projects` heads its own
+        // "📋 WEEKLY PROJECTS SUMMARY" (see the vendored
+        // `src/display/default.rs`), so those are the substrings that prove
+        // the sections were skipped rather than rendered empty.
+        assert!(
+            !text.contains("WEEKLY WARNINGS"),
+            "an empty warnings list must render no warnings section: {text}"
+        );
+        assert!(
+            !text.contains("WEEKLY PROJECTS"),
+            "an empty projects list must render no projects section: {text}"
+        );
+        assert!(text.contains(WEEK_START), "week start label: {text}");
+        assert!(text.contains(WEEK_END), "week end label: {text}");
+    }
+
+    /// A populated week renders the aggregate (totals, warnings, projects)
+    /// and then one section per day: a real day summary for a day with
+    /// entries, and the no-file line for a day with no file at all.
+    #[test]
+    fn assemble_weekly_view_renders_aggregate_and_per_day_sections() {
+        let formatter = DefaultDisplayFormatter;
+        let content = "9-10 work\n";
+        let summary = WeeklySummary {
+            total_minutes: 180,
+            dead_time_minutes: 30,
+            warnings: vec!["Saturday 2024-01-06: something looks off".to_owned()],
+            projects: vec![WeeklyProject {
+                name: "work".to_owned(),
+                total_minutes: 180,
+                notes: vec!["Saturday 2024-01-06: wrote the thing".to_owned()],
+            }],
+            days: vec![
+                (
+                    date!(2024 - 01 - 06),
+                    content.to_owned(),
+                    Some(parse_time_tracking_data(content, None, None)),
+                ),
+                (date!(2024 - 01 - 07), String::new(), None),
+            ],
+            ..Default::default()
+        };
+
+        let text = assemble_weekly_view(WEEK_START, WEEK_END, &summary, None, None, &formatter);
+
+        // 180 minutes formats as "3:00 (3.00 hrs)" via
+        // `Time::format_duration_minutes`/`_decimal`.
+        assert!(text.contains("3:00"), "weekly working total: {text}");
+        assert!(text.contains("0:30"), "weekly dead time: {text}");
+        assert!(text.contains("WEEKLY WARNINGS"), "warnings section: {text}");
+        assert!(text.contains("something looks off"), "warning text: {text}");
+        assert!(text.contains("WEEKLY PROJECTS"), "projects section: {text}");
+        assert!(text.contains("wrote the thing"), "project note: {text}");
+
+        // Day headers come from `format_day_with_date`, i.e. "Weekday date".
+        assert!(
+            text.contains("Saturday 2024-01-06"),
+            "day header for the day with data: {text}"
+        );
+        assert!(
+            text.contains("Sunday 2024-01-07"),
+            "day header for the day with no file: {text}"
+        );
+        assert!(
+            text.contains(NO_FILE_FOR_DAY.trim()),
+            "a day with no file says so: {text}"
+        );
+    }
+
+    /// A day whose file exists but parses to nothing gets the no-data line,
+    /// not an empty day summary.
+    #[test]
+    fn assemble_weekly_view_marks_a_present_but_empty_day() {
+        let formatter = DefaultDisplayFormatter;
+        let content = "# just a heading\n";
+        let summary = WeeklySummary {
+            days: vec![(
+                date!(2024 - 01 - 06),
+                content.to_owned(),
+                Some(parse_time_tracking_data(content, None, None)),
+            )],
+            ..Default::default()
+        };
+
+        let text = assemble_weekly_view(WEEK_START, WEEK_END, &summary, None, None, &formatter);
+
+        assert!(
+            text.contains(NO_DATA_FOR_DAY.trim()),
+            "a file with no entries says so: {text}"
+        );
+        assert!(
+            !text.contains(NO_FILE_FOR_DAY.trim()),
+            "a file that exists must not be reported as missing: {text}"
+        );
+    }
 }

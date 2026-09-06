@@ -12,10 +12,8 @@
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
-#[allow(dead_code)]
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-#[allow(dead_code)]
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_current_thread()
@@ -27,7 +25,6 @@ fn runtime() -> &'static Runtime {
 
 /// Run `fut` to completion on the shared runtime, blocking the calling
 /// thread until it finishes.
-#[allow(dead_code)]
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     runtime().block_on(fut)
 }

@@ -528,11 +528,12 @@ fn test_time_tracking_with_config_creates_commands() {
         "TimeTrackingToggle nargs=0 handler=true".to_string(),
         "TimeTrackingUpdate nargs=0 handler=true".to_string(),
         "TimeTrackingUpdateThrottled nargs=0 handler=true".to_string(),
+        "TimeTrackingWeeklyToggle nargs=0 handler=true".to_string(),
     ];
 
     assert_eq!(
         registered, expected,
-        "exactly these nine TimeTracking* commands, with these argument counts, \
+        "exactly these ten TimeTracking* commands, with these argument counts, \
          must be registered and bound to a handler"
     );
 }
@@ -2552,5 +2553,265 @@ fn test_status_function_marks_non_tracking_buffer() {
         None,
         "the non-tracking branch must not carry parsed totals it never computed: {:?}",
         result
+    );
+}
+
+// --- W5: the weekly summary view (`:TimeTrackingWeeklyToggle`) -------------
+
+/// The seven dates the weekly view will render, resolved exactly the way
+/// `preview::render_weekly_view` resolves them: the local date when the
+/// process can determine an offset and the UTC date otherwise (which is the
+/// ordinary answer in a multi-threaded process, since `time` refuses the
+/// unsound `localtime_r` there), anchored on `Config::default()`'s week start
+/// of Saturday.
+///
+/// Computed rather than hardcoded because the view is about *this* week: a
+/// fixture week would render seven "No time tracking file found" days no
+/// matter what the test seeded.
+fn current_week_dates() -> [time::Date; 7] {
+    let today = time::OffsetDateTime::now_local()
+        .map(|dt| dt.date())
+        .unwrap_or_else(|_| time::OffsetDateTime::now_utc().date());
+    time_tracking_cli::get_week_dates(&today, time::Weekday::Saturday)
+}
+
+/// The day file name `DataService` will look for for `date` — the same
+/// `[year]-[month]-[day].md` shape `DataService::get_file_path` builds.
+fn day_file_name(date: time::Date) -> String {
+    format!(
+        "{}.md",
+        date.format(&time_tracking_cli::DATE_FORMAT)
+            .expect("a Date always formats as YYYY-MM-DD")
+    )
+}
+
+// W5: the weekly view must aggregate the whole week's day files rather than
+// re-render the current buffer. Two seeded days sharing one project make that
+// checkable end to end: the rollup for `alpha` is 2:00 only if both files were
+// read, parsed and summed -- neither file contains that number on its own.
+#[nvim_oxi::test]
+fn test_weekly_toggle_renders_aggregate_totals() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    // 60 minutes of `alpha`.
+    create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+    // 60 more of `alpha`, plus 90 of `beta`.
+    create_test_file(
+        temp_dir.path(),
+        &day_file_name(week[2]),
+        "9-10 alpha\n10-11:30 beta\n",
+    );
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+
+    assert!(
+        preview_buffer_exists(),
+        "the weekly toggle must open a preview"
+    );
+    let text = preview_text(&preview_buffer());
+
+    // 210 minutes across the week: 60 + 60 + 90.
+    assert!(
+        text.contains("Total Working Time: 3:30"),
+        "the weekly total must sum every seeded day: {text}"
+    );
+    // `alpha - 2:00` appears in neither day file's own summary; only the
+    // cross-day rollup produces it.
+    assert!(
+        text.contains("alpha - 2:00"),
+        "a project's weekly rollup must span days: {text}"
+    );
+    assert!(
+        text.contains("beta - 1:30"),
+        "a project present on one day only must still roll up: {text}"
+    );
+
+    // Both seeded days get their own breakdown below the aggregate...
+    assert!(
+        text.contains(&time_tracking_cli::format_day_with_date(&week[1])),
+        "the first seeded day must have a breakdown: {text}"
+    );
+    assert!(
+        text.contains(&time_tracking_cli::format_day_with_date(&week[2])),
+        "the second seeded day must have a breakdown: {text}"
+    );
+    // ...and the five days with no file are reported as such rather than
+    // silently dropped, so the week reads as seven days.
+    assert!(
+        text.contains("No time tracking file found"),
+        "days with no file must be called out: {text}"
+    );
+}
+
+// W5: the toggle half. A second `:TimeTrackingWeeklyToggle` on an open weekly
+// view closes it, the way `:TimeTrackingToggle` closes an open day view.
+#[nvim_oxi::test]
+fn test_weekly_toggle_closes_the_weekly_view_it_opened() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "the first weekly toggle must open the preview"
+    );
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    assert!(
+        !preview_buffer_exists(),
+        "a second weekly toggle must close the weekly view"
+    );
+}
+
+// W5: the other half of that condition. `:TimeTrackingWeeklyToggle` closes the
+// preview only when the preview is showing *the weekly view*; run against an
+// open day view it is a view switch, not a close. Toggling on the mere
+// presence of a preview window would make the command unreachable from the
+// state a user is nearly always in -- the day view auto-opens.
+#[nvim_oxi::test]
+fn test_weekly_toggle_switches_an_open_day_view_to_the_week() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    let md = create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    // The ordinary starting point: the day view, open.
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    let preview = preview_buffer();
+    assert!(
+        !preview_text(&preview).contains("WEEKLY TIME TRACKING SUMMARY"),
+        "the day view must be what is showing first: {}",
+        preview_text(&preview)
+    );
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+
+    assert!(
+        preview_buffer_exists(),
+        "the weekly toggle must not close a preview showing the day view"
+    );
+    assert!(
+        preview_text(&preview_buffer()).contains("WEEKLY TIME TRACKING SUMMARY"),
+        "the weekly toggle must swap the day view for the week: {}",
+        preview_text(&preview_buffer())
+    );
+}
+
+// W5: the keystroke-driven path must leave an open weekly view completely
+// alone -- it must not render the day view over it, and it must not re-run the
+// week's aggregation either. Re-reading and re-parsing seven day files is by
+// some margin the most expensive thing this plugin does, and TextChanged fires
+// once per keystroke.
+//
+// Both halves are observable through one probe: a day file written to disk
+// *after* the weekly view was rendered. `render_weekly_view` builds a fresh
+// `DataService` (and so a fresh cache) on every call, so any re-aggregation
+// would pick that file up. The preview holding exactly its pre-existing text
+// therefore proves the throttled path did neither -- where asserting only
+// "still the weekly view" would not, since `update_preview_fn` would answer
+// that on its own by re-rendering the same week.
+#[nvim_oxi::test]
+fn test_typing_neither_replaces_nor_re_aggregates_the_weekly_view() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    // Make a tracking buffer current, so the throttled path gets past its
+    // `is_time_tracking_file` gate and would otherwise render the day view.
+    let md = create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    let preview = preview_buffer();
+    let before = preview_text(&preview);
+    let tick_before = preview.get_changedtick().unwrap();
+    assert!(
+        before.contains("Total Working Time: 1:00"),
+        "the weekly view must be showing the one seeded day first: {before}"
+    );
+
+    // A second day appears on disk. Only a re-aggregation could notice.
+    create_test_file(temp_dir.path(), &day_file_name(week[2]), "10-11:30 beta\n");
+
+    // The TextChanged/TextChangedI autocommand's entry point. The throttle
+    // window was just reset, so this takes the leading edge and renders
+    // synchronously -- if it renders at all.
+    time_tracking_nvim::update_preview_throttled(config_static).unwrap();
+
+    assert_eq!(
+        preview.get_changedtick().unwrap(),
+        tick_before,
+        "a keystroke must not rewrite the preview while the weekly view is up"
+    );
+    assert_eq!(
+        preview_text(&preview),
+        before,
+        "a keystroke must neither swap in the day view nor re-aggregate the week"
+    );
+}
+
+// W5: an explicitly typed `:TimeTrackingUpdate` is a *refresh*, so it rebuilds
+// whichever view is showing. Rendering the day view unconditionally there
+// would make the command a silent view switch, and would undo the weekly view
+// the moment any other code path invoked it.
+#[nvim_oxi::test]
+fn test_explicit_update_refreshes_the_weekly_view_rather_than_replacing_it() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    let md = create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+    let mut buf = api::create_buf(false, false).unwrap();
+    buf.set_name(&md).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    let preview = preview_buffer();
+    assert!(
+        preview_text(&preview).contains("Total Working Time: 1:00"),
+        "the weekly view must be showing the one seeded day first: {}",
+        preview_text(&preview)
+    );
+
+    // The same probe the throttled test uses, with the opposite expectation:
+    // an explicit refresh *must* pick this up.
+    create_test_file(temp_dir.path(), &day_file_name(week[2]), "10-11:30 beta\n");
+
+    time_tracking_nvim::update_preview_fn(config_static).unwrap();
+
+    let text = preview_text(&preview);
+    assert!(
+        text.contains("WEEKLY TIME TRACKING SUMMARY"),
+        ":TimeTrackingUpdate must refresh the weekly view, not replace it: {text}"
+    );
+    assert!(
+        text.contains("Total Working Time: 2:30"),
+        ":TimeTrackingUpdate must re-aggregate the week, picking up the new day: {text}"
     );
 }

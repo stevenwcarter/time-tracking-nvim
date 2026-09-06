@@ -26,7 +26,7 @@ pub mod utils;
 
 pub use preview::{
     auto_close_preview, auto_open_preview, close_preview, create_or_update_preview, throttle_fire,
-    toggle_preview_fn, update_preview_fn, update_preview_throttled,
+    toggle_preview_fn, toggle_weekly_preview_fn, update_preview_fn, update_preview_throttled,
 };
 // Test seams, not interface: see `preview::write_preview_contents_with` and
 // `preview::reset_throttle_for_test`.
@@ -258,6 +258,13 @@ fn register_commands(config: &'static Config) -> Result<()> {
     let toggle_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| toggle_preview_fn(config)));
 
+    // The week-at-a-glance counterpart to `:TimeTrackingToggle`. It aggregates
+    // the data directory rather than the current buffer, so unlike the day
+    // toggle it does not require a tracking buffer to be current.
+    let toggle_weekly_preview = Function::from_fn(move |_: CommandArgs| {
+        catch_nvim_panic(|| toggle_weekly_preview_fn(config))
+    });
+
     let update_preview =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| update_preview_fn(config)));
 
@@ -341,6 +348,11 @@ fn register_commands(config: &'static Config) -> Result<()> {
             "TimeTrackingToggle",
             "Toggle the time-tracking preview split",
             toggle_preview,
+        ),
+        (
+            "TimeTrackingWeeklyToggle",
+            "Toggle the weekly time-tracking summary in the preview split",
+            toggle_weekly_preview,
         ),
         (
             "TimeTrackingUpdate",
