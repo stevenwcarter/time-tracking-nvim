@@ -194,6 +194,12 @@ end
 
 -- The probe sequence for a run that never returns early: every section is
 -- reached and each of the three external tools is checked in turn.
+--
+-- load_native appears twice on purpose: check_native_module asks for the
+-- module to report on the load itself, and check_data_directory asks again to
+-- reach data_directory_status() on it. Both go through the same
+-- `internal.load_native` seam rather than a raw require -- which is exactly
+-- what lets the two data-directory cases below drive either branch.
 local FULL_PROBES = table.concat({
   "get_platform_info",
   "get_binary_path",
@@ -201,6 +207,7 @@ local FULL_PROBES = table.concat({
   "fs_stat",
   "read_binary_version",
   "plugin_root",
+  "load_native",
   "load_native",
   "exists",
   "executable:curl",
@@ -270,6 +277,36 @@ H.describe("M.check", function()
     local rec = run_check(world)
     H.eq(rec.probes, FULL_PROBES, "probes: no early return on a load failure")
     H.eq(rec.health, "start,ok,ok,ok,ok,error,ok,ok,ok,ok", "health calls")
+  end)
+
+  -- W10's data-directory check. default_world's load_value is a bare `{}`
+  -- with no data_directory_status field, which is why every case above
+  -- reports nothing for this section; these two put the function there and
+  -- drive each branch. The extra call lands between the native-module report
+  -- and the commands report, which is what the position of the added
+  -- ok/error in these sequences pins.
+  H.it("data directory resolves: reports ok between the load and commands sections", function()
+    local world = default_world()
+    world.load_value = {
+      data_directory_status = function()
+        return { resolved = true, canonical_path = "/tmp/tracking" }
+      end,
+    }
+    local rec = run_check(world)
+    H.eq(rec.probes, FULL_PROBES, "probes")
+    H.eq(rec.health, "start,ok,ok,ok,ok,ok,ok,ok,ok,ok,ok", "health calls")
+  end)
+
+  H.it("data directory does not resolve: errors between the load and commands sections", function()
+    local world = default_world()
+    world.load_value = {
+      data_directory_status = function()
+        return { resolved = false, configured = "~/does-not-exist" }
+      end,
+    }
+    local rec = run_check(world)
+    H.eq(rec.probes, FULL_PROBES, "probes: an unresolved data directory is not fatal")
+    H.eq(rec.health, "start,ok,ok,ok,ok,ok,error,ok,ok,ok,ok", "health calls")
   end)
 end)
 

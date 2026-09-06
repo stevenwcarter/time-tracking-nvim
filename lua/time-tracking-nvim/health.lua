@@ -123,9 +123,24 @@ end
 
 -- Data directory. Needs the native module loaded to call this, so it runs
 -- after check_native_module and reports nothing if that failed.
-local function check_data_directory()
-	local ok, native = pcall(require, "time_tracking_nvim")
-	if not ok or type(native) ~= "table" or not native.data_directory_status then
+--
+-- Reaches the native module through `internal.load_native()`, exactly as
+-- check_native_module does, rather than doing its own `require`. That is the
+-- dependency-injection seam every other check in this file goes through, and
+-- it is what makes both branches below testable: spec_health.lua stubs
+-- load_native, so a second, independent require here would be unstubbable —
+-- leaving this function uncovered *and* making every health-call-sequence
+-- assertion in that spec depend on whether the real native module happens to
+-- resolve on the machine running the tests.
+--
+-- load_native is a `pcall(require, ...)`, and Lua caches package.loaded, so
+-- calling it a second time here costs a table lookup, not a second dlopen.
+local function check_data_directory(internal)
+	local load_status, native
+	if internal.load_native then
+		load_status, native = internal.load_native()
+	end
+	if load_status ~= "ok" or type(native) ~= "table" or not native.data_directory_status then
 		return
 	end
 
@@ -191,7 +206,7 @@ function M.check()
 	check_versions(internal)
 	check_cpath(internal)
 	check_native_module(internal)
-	check_data_directory()
+	check_data_directory(internal)
 	check_commands()
 	check_external_tools()
 end

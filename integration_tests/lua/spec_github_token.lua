@@ -33,7 +33,10 @@ local tt = require("time-tracking-nvim")
 -- resolve_github_token() falls back to those two, so left alone a
 -- contributor's own shell (GH_TOKEN is common for `gh` CLI scripting) would
 -- leak an ambient token into the "no token configured" cases. Every other
--- environment variable still resolves through the real os.getenv.
+-- environment variable still resolves through the real os.getenv. Each case
+-- says what those two names answer with (with_run's third argument), so the
+-- fallback is exercised in both directions -- present and absent -- rather
+-- than only ever being stubbed away.
 
 local function upvalue(fn, name)
   local i = 1
@@ -92,7 +95,13 @@ end
 -- Handle fields:
 --   calls   { {argv, cb}, ... } for every vim.system spawned WITH a callback
 --   done    { ok, err } once the download_binary callback fires, nil until then
-local function start()
+-- `env` maps GITHUB_TOKEN/GH_TOKEN to the values the stubbed os.getenv should
+-- answer with; anything absent from it reads back as nil. Defaulting it to an
+-- empty table is what makes "no token anywhere" the baseline, and passing a
+-- populated one is what lets a case exercise resolve_github_token's
+-- environment half.
+local function start(env)
+  env = env or {}
   local target = LINUX
   local root = vim.fn.tempname() .. "_token_spec"
   vim.fn.mkdir(root, "p")
@@ -118,10 +127,12 @@ local function start()
   -- make them fail outside this ambient state -- exactly the class of
   -- externality spec_download.lua/spec_setup.lua stub out for vim.system,
   -- vim.fn.tempname/executable, uv.os_uname, etc. Every other name falls
-  -- through to the real os.getenv unchanged.
+  -- through to the real os.getenv unchanged. Driving both names from `env`
+  -- rather than hardcoding nil is what lets a case put a token in the
+  -- environment deterministically, on any machine, either way round.
   os.getenv = function(name)
     if name == "GITHUB_TOKEN" or name == "GH_TOKEN" then
-      return nil
+      return env[name]
     end
     return saved.getenv(name)
   end
@@ -179,8 +190,8 @@ local function start()
   return run
 end
 
-local function with_run(opts, fn)
-  local run = start()
+local function with_run(opts, fn, env)
+  local run = start(env)
   local ok, err = pcall(function()
     run:begin(opts)
     fn(run)
@@ -220,6 +231,41 @@ H.describe("github_token", function()
       H.eq(#run.calls, 1, "only the release fetch should have happened so far")
       H.eq(auth_header(run.calls[1].argv), nil, "no token was configured, but a header was sent anyway")
     end)
+  end)
+
+  -- The environment half of resolve_github_token
+  -- (`... or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")`). Every case
+  -- above stubs both names to nil, so without this the fallback never
+  -- executes under test at all and deleting it would break nothing.
+  H.it("falls back to $GITHUB_TOKEN when setup() configured no github_token", function()
+    with_run({}, function(run)
+      H.eq(#run.calls, 1, "only the release fetch should have happened so far")
+      H.eq(
+        auth_header(run.calls[1].argv),
+        "Authorization: Bearer env-token-abc",
+        "expected the environment token in: " .. vim.inspect(run.calls[1].argv)
+      )
+    end, { GITHUB_TOKEN = "env-token-abc" })
+  end)
+
+  H.it("falls back to $GH_TOKEN when neither github_token nor $GITHUB_TOKEN is set", function()
+    with_run({}, function(run)
+      H.eq(
+        auth_header(run.calls[1].argv),
+        "Authorization: Bearer gh-token-xyz",
+        "expected the GH_TOKEN fallback in: " .. vim.inspect(run.calls[1].argv)
+      )
+    end, { GH_TOKEN = "gh-token-xyz" })
+  end)
+
+  H.it("an explicit github_token wins over the environment", function()
+    with_run({ github_token = "explicit-token" }, function(run)
+      H.eq(
+        auth_header(run.calls[1].argv),
+        "Authorization: Bearer explicit-token",
+        "setup()'s value must win over $GITHUB_TOKEN: " .. vim.inspect(run.calls[1].argv)
+      )
+    end, { GITHUB_TOKEN = "env-token-abc" })
   end)
 
   H.it("never adds the Authorization header to the asset-download curl call, even when a token is configured", function()
