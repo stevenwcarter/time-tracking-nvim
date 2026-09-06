@@ -264,6 +264,69 @@ pub fn time_tracking_with_config(config: &'static Config) -> Result<Dictionary> 
     Ok(api)
 }
 
+/// `:TimeTrackingOpenToday`: opens today's tracking file, creating it from
+/// the configured template if it doesn't exist yet.
+///
+/// "Today" is resolved via `preview::today()` — Neovim's own local date, read
+/// through `strftime` — rather than `time::OffsetDateTime::now_local()`.
+/// `now_local()` is effectively always an error in Neovim's multi-threaded
+/// process, so a naive implementation would silently fall back to UTC on
+/// nearly every real invocation, and near local midnight that can create (or
+/// open) the wrong day's file. See `preview::today`'s doc comment for the
+/// full story (whats-next W5's fix).
+///
+/// An existing file is opened as-is and never re-seeded from the template:
+/// only the *absence* of the file triggers template expansion.
+pub fn open_today_fn(config: &'static Config) -> Result<()> {
+    let Some(data_dir) = config.get_data_directory() else {
+        log_error!("[time-tracking-nvim] no data directory configured");
+        return Ok(());
+    };
+
+    let today = crate::preview::today();
+    let date_str = today
+        .format(&time_tracking_cli::DATE_FORMAT)
+        .unwrap_or_else(|_| today.to_string());
+
+    let dir = std::path::Path::new(data_dir);
+    let file_path = dir.join(format!("{date_str}.md"));
+
+    if !file_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log_error!(
+                "[time-tracking-nvim] could not create data directory: {}",
+                e
+            );
+            return Ok(());
+        }
+        // A template-read failure (e.g. a configured `template_file` that no
+        // longer exists) falls back to an empty file rather than blocking the
+        // command entirely — the day file is still worth creating and opening
+        // — but is logged rather than swallowed, unlike the brief's sketch,
+        // so a misconfigured template doesn't fail silently.
+        let content = crate::async_rt::block_on(time_tracking_cli::create_template_content(
+            &today,
+            config.get_template_file(),
+        ))
+        .unwrap_or_else(|e| {
+            log_error!(
+                "[time-tracking-nvim] could not build today's file from the template: {}",
+                e
+            );
+            String::new()
+        });
+        if let Err(e) = std::fs::write(&file_path, content) {
+            log_error!("[time-tracking-nvim] could not create today's file: {}", e);
+            return Ok(());
+        }
+    }
+
+    let escaped: String = api::call_function("fnameescape", (file_path.to_string_lossy(),))
+        .unwrap_or_else(|_| file_path.to_string_lossy().into_owned());
+    api::command(&format!("edit {escaped}"))?;
+    Ok(())
+}
+
 /// Register the `TimeTracking*` user commands.
 fn register_commands(config: &'static Config) -> Result<()> {
     let toggle_preview =
@@ -289,6 +352,9 @@ fn register_commands(config: &'static Config) -> Result<()> {
     // is its only caller.
     let throttle_fire_cmd =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| throttle_fire(config)));
+
+    let open_today =
+        Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| open_today_fn(config)));
 
     let auto_open =
         Function::from_fn(move |_: CommandArgs| catch_nvim_panic(|| auto_open_preview(config)));
@@ -376,6 +442,11 @@ fn register_commands(config: &'static Config) -> Result<()> {
             "TimeTrackingWeeklyToggle",
             "Toggle the weekly time-tracking summary in the preview split",
             toggle_weekly_preview,
+        ),
+        (
+            "TimeTrackingOpenToday",
+            "Open (creating if needed) today's tracking file",
+            open_today,
         ),
         (
             "TimeTrackingUpdate",

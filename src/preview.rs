@@ -444,7 +444,14 @@ const NO_FILE_FOR_DAY: &str = "  No time tracking file found\n";
 ///
 /// The UTC fallback below is now genuinely a last resort — it is reached only
 /// if the API call or the parse fails, neither of which should happen.
-fn today() -> Date {
+///
+/// `pub(crate)`, not private: `lib.rs`'s `:TimeTrackingOpenToday` handler
+/// (`open_today_fn`) also needs "today" for the day-file path, and must reuse
+/// this rather than growing its own second, independent date resolution — see
+/// this doc comment's own history (`today_for_test`'s note below) for why an
+/// independent reimplementation is exactly how the timezone bug it describes
+/// came to exist in the first place.
+pub(crate) fn today() -> Date {
     api::call_function::<_, String>("strftime", ("%Y-%m-%d",))
         .ok()
         .and_then(|s| Date::parse(&s, &DATE_FORMAT).ok())

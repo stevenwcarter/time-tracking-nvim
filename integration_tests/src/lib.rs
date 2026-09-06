@@ -524,6 +524,7 @@ fn test_time_tracking_with_config_creates_commands() {
         "TimeTrackingClose nargs=0 handler=true".to_string(),
         "TimeTrackingInvalidateBufCache nargs=? handler=true".to_string(),
         "TimeTrackingMaybeCloseIfInvisible nargs=? handler=true".to_string(),
+        "TimeTrackingOpenToday nargs=0 handler=true".to_string(),
         "TimeTrackingThrottleFire nargs=0 handler=true".to_string(),
         "TimeTrackingToggle nargs=0 handler=true".to_string(),
         "TimeTrackingUpdate nargs=0 handler=true".to_string(),
@@ -533,7 +534,7 @@ fn test_time_tracking_with_config_creates_commands() {
 
     assert_eq!(
         registered, expected,
-        "exactly these ten TimeTracking* commands, with these argument counts, \
+        "exactly these eleven TimeTracking* commands, with these argument counts, \
          must be registered and bound to a handler"
     );
 }
@@ -3085,4 +3086,60 @@ fn test_preview_refreshes_after_external_file_change_and_checktime() {
     // re-renders synchronously on its leading edge (see update_preview_throttled),
     // so the preview reflects the new content without the user typing.
     assert!(preview_buffer_exists());
+}
+
+// W11: :TimeTrackingOpenToday creates today's file from the configured
+// template when it doesn't exist yet, opens it, and never re-seeds an
+// existing file.
+//
+// The expected file name is derived from `today_for_test()` -- the very
+// `today()` that `open_today_fn` itself calls -- via the same `day_file_name`
+// helper the weekly-view tests use, rather than from
+// `time::OffsetDateTime::now_utc().date()`. `open_today_fn` resolves "today"
+// through Neovim's own local date (see `preview::today`'s doc comment), and
+// near local midnight in a timezone that disagrees with UTC, a UTC-derived
+// oracle and the production code would compute two different dates -- exactly
+// the bug `today()` exists to avoid reintroducing (whats-next W5). Anchoring
+// both sides on the same function is what `current_week_dates`'s doc comment
+// already establishes this suite must do.
+#[nvim_oxi::test]
+fn test_open_today_creates_file_from_template_and_opens_it() {
+    let (mut config, temp_dir) = create_test_config_with_temp_dir();
+    let template_path = create_test_file(temp_dir.path(), "template.md", "# {date}\n\n");
+    config.template_file = Some(template_path.to_str().unwrap().to_string());
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    time_tracking_nvim::open_today_fn(config_static).unwrap();
+
+    let today = time_tracking_nvim::today_for_test();
+    let expected_path = temp_dir.path().join(day_file_name(today));
+    assert!(
+        expected_path.exists(),
+        "today's file should have been created"
+    );
+
+    let today_str = today
+        .format(&time_tracking_cli::DATE_FORMAT)
+        .expect("a Date always formats as YYYY-MM-DD");
+    let content = fs::read_to_string(&expected_path).unwrap();
+    assert!(
+        content.contains(&today_str),
+        "the {{date}} placeholder should be replaced: {content}"
+    );
+
+    let current_name = api::get_current_buf().get_name().unwrap().to_string();
+    assert_eq!(
+        current_name,
+        expected_path.to_str().unwrap(),
+        "opening today's file should make it the current buffer"
+    );
+
+    // Running it again must not overwrite existing content.
+    fs::write(&expected_path, "9-10 work\n").unwrap();
+    time_tracking_nvim::open_today_fn(config_static).unwrap();
+    let content_after = fs::read_to_string(&expected_path).unwrap();
+    assert_eq!(
+        content_after, "9-10 work\n",
+        "an existing file must not be re-seeded"
+    );
 }
