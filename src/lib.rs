@@ -19,6 +19,7 @@ use time_tracking_cli::Config;
 
 use crate::utils::any_tracking_visible;
 
+mod async_rt;
 mod preview;
 pub mod utils;
 

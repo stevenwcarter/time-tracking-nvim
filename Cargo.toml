@@ -26,6 +26,7 @@ time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
     "neovim-0-12",
 ] }
+tokio = { version = "1", features = ["rt"] }
 
 [workspace]
 exclude = ["integration_tests"]
