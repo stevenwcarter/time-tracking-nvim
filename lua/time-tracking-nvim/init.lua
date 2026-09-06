@@ -45,6 +45,12 @@ local default_config = {
 	-- and for air-gapped mirrors. Leaving this false means a downloaded native
 	-- library is never dlopen'd without matching a published digest.
 	allow_unverified_download = false,
+	-- Optional token for the GitHub API call only (never sent with asset
+	-- downloads); falls back to $GITHUB_TOKEN / $GH_TOKEN. Unauthenticated
+	-- requests to api.github.com are capped at 60/hour per IP, which a shared
+	-- NAT or CI runner can exhaust; an authenticated request raises that to
+	-- 5000/hour.
+	github_token = nil,
 }
 
 -- Add the binary directory to Lua's cpath
@@ -267,6 +273,14 @@ local function curl_cmd(extra)
 	table.insert(cmd, curl_fail_flag())
 	vim.list_extend(cmd, extra)
 	return cmd
+end
+
+-- Resolve the GitHub token to use for the release-API call: an explicit
+-- setup({ github_token = ... }) wins, falling back to the environment.
+-- Deliberately consulted only by fetch_release -- fetch_file (asset/
+-- SHA256SUMS downloads) must never see this, so nothing calls it there.
+local function resolve_github_token(config)
+	return (config and config.github_token) or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 end
 
 -- Constrain where a release asset may be fetched from.
@@ -526,10 +540,20 @@ end
 
 -- Fetch a release's metadata from the GitHub API.
 -- cb(release_info) on success, cb(nil, reason) on failure.
-local function fetch_release(release_url, cb)
+--
+-- `token`, when given, is sent as an Authorization header to raise GitHub's
+-- unauthenticated rate limit (60/hour per IP) to the authenticated one. This
+-- is the only curl call that may carry it -- fetch_file (the asset/
+-- SHA256SUMS download, below) must never receive it.
+local function fetch_release(release_url, token, cb)
 	-- -S (in addition to -s) so a hard failure below still has a real curl
 	-- error on stderr instead of an empty string; -s alone suppresses it.
-	local cmd = curl_cmd({ "-L", "-s", "-S", release_url })
+	local extra = { "-L", "-s", "-S", release_url }
+	if token then
+		table.insert(extra, 1, "Authorization: Bearer " .. token)
+		table.insert(extra, 1, "-H")
+	end
+	local cmd = curl_cmd(extra)
 
 	vim.system(cmd, {}, function(result)
 		vim.schedule(function()
@@ -689,8 +713,9 @@ local function download_binary(target, binary_path, callback, expected_version, 
 	-- recorded expected_version, so the .version file was an assertion about
 	-- what we wanted rather than an observation of what we got.
 	local release_url = expected_version and (API_BASE .. "/tags/v" .. expected_version) or (API_BASE .. "/latest")
+	local token = resolve_github_token(opts)
 
-	fetch_release(release_url, function(release_info, release_err)
+	fetch_release(release_url, token, function(release_info, release_err)
 		if release_err then
 			return callback(false, release_err)
 		end
@@ -953,7 +978,7 @@ local function download_then_load(target, binary_path, config, labels)
 				{ labels.loaded, "Normal" },
 			})
 		end
-	end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download })
+	end, PLUGIN_VERSION, { allow_unverified = config.allow_unverified_download, github_token = config.github_token })
 
 	return true
 end
@@ -966,6 +991,9 @@ end
 --   allow_unverified_download  install a release that publishes no SHA256SUMS
 --                              entry for the asset (a digest *mismatch* is still
 --                              refused)
+--   github_token               sent as an Authorization header on the release-API
+--                              call only, to raise GitHub's unauthenticated rate
+--                              limit; falls back to $GITHUB_TOKEN / $GH_TOKEN
 --
 -- Resolves the platform and the library path, downloads if one of the above says
 -- to, adds the library's directory to package.cpath, then requires the native
@@ -1104,7 +1132,10 @@ function M.download()
 				{ "Download failed: " .. message, "Normal" },
 			})
 		end
-	end, PLUGIN_VERSION, { allow_unverified = (M.config or {}).allow_unverified_download })
+	end, PLUGIN_VERSION, {
+		allow_unverified = (M.config or {}).allow_unverified_download,
+		github_token = (M.config or {}).github_token,
+	})
 end
 
 -- Check version information
