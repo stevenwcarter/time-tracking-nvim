@@ -433,6 +433,8 @@ fn register_autocommands() -> Result<()> {
     api::command("autocmd WinClosed * TimeTrackingMaybeCloseIfInvisible <amatch>")?;
     api::command("autocmd TextChanged,TextChangedI *.md TimeTrackingUpdateThrottled")?;
     api::command("autocmd VimEnter,BufWinEnter *.md TimeTrackingAutoOpen")?;
+    api::command("autocmd BufReadPost,FileChangedShellPost *.md TimeTrackingUpdateThrottled")?;
+    api::command("autocmd FocusGained,BufEnter *.md checktime")?;
     // NOT interpolating PREVIEW_BUF_NAME here on purpose: `:bwipeout` splits its
     // argument on whitespace and matches each piece as a regexp, so this never
     // matches the preview buffer and errors under `silent!` (bughunt B54).

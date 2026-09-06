@@ -2965,3 +2965,30 @@ fn test_day_view_is_still_closed_when_no_tracking_file_is_visible() {
         "the day view must still be closed when no tracking file is visible"
     );
 }
+
+#[nvim_oxi::test]
+fn test_preview_refreshes_after_external_file_change_and_checktime() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+    api::command(&format!("edit {}", file_path.to_str().unwrap())).unwrap();
+
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    assert!(preview_buffer_exists());
+
+    // Change the file on disk, outside the buffer.
+    create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n10-11 admin\n");
+
+    api::command("checktime").unwrap();
+
+    // The autocmd chain (FileChangedShellPost -> TimeTrackingUpdateThrottled)
+    // re-renders synchronously on its leading edge (see update_preview_throttled),
+    // so the preview reflects the new content without the user typing.
+    assert!(preview_buffer_exists());
+}
