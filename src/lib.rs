@@ -492,10 +492,14 @@ fn register_commands(config: &'static Config) -> Result<()> {
         ),
         (
             // Marked "(internal)" like `TimeTrackingMaybeCloseIfInvisible`:
-            // this command is wired to no autocommand (bughunt B57) and its
+            // this is the target of the `QuitPre` autocommand (see
+            // `register_autocommands`) rather than something to type, and its
             // description was otherwise indistinguishable from
             // `TimeTrackingClose`'s in the `:TimeTracking<Tab>` completion
-            // list. Renaming or removing it is B57's job, not this one's.
+            // list. It differs from `TimeTrackingClose` in exactly one way,
+            // and that is the point of it: it closes without marking the
+            // preview dismissed. Renaming it is bughunt B57's job, not this
+            // one's.
             "TimeTrackingAutoClose",
             "(internal) Close the time-tracking preview",
             auto_close,
@@ -545,7 +549,19 @@ fn register_autocommands() -> Result<()> {
     // Substituting the constant would make the line read as correct while
     // staying inert. Fix it properly with B54 instead.
     api::command("autocmd VimLeavePre * silent! bwipeout [Time Tracking Preview]")?;
-    api::command("autocmd QuitPre * TimeTrackingClose")?;
+    // Deliberately `TimeTrackingAutoClose`, not `TimeTrackingClose`.
+    //
+    // `:TimeTrackingClose`'s handler marks the preview *dismissed* (see
+    // `register_commands`), which is right for a user typing the command and
+    // catastrophic here: `QuitPre` fires for every `:q` anywhere in the
+    // session, including quitting an unrelated split, so routing it through
+    // the dismissing path would leave `PREVIEW_DISMISSED` latched and stop the
+    // preview auto-opening for *any* tracking file for the rest of the
+    // session. `TimeTrackingAutoClose` closes and nothing else, which is
+    // exactly what this autocommand did before dismissal existed — bughunt
+    // B19 (this closes the preview on any `:q`, not just the one showing it)
+    // is left exactly as it was, out of scope, rather than compounded.
+    api::command("autocmd QuitPre * TimeTrackingAutoClose")?;
     api::command("augroup END")?;
     Ok(())
 }

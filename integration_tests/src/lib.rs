@@ -2339,6 +2339,134 @@ fn preview_buffer_exists() -> bool {
     api::list_bufs().any(|b| is_preview_buf(&b).unwrap_or(false))
 }
 
+/// Every autocommand in the `TimeTrackingNvim` group, as
+/// `"<event> <pattern> -> <command>"` strings.
+///
+/// Read through `luaeval` for the same reason `test_time_tracking_with_config_creates_commands`
+/// reads `nvim_get_commands` that way: nvim-oxi's typed wrapper deserializes
+/// the whole result, and one entry with a shape its types don't cover fails the
+/// call before it reaches ours.
+///
+/// A comma-separated `autocmd` line registers one entry *per event*, so
+/// `autocmd BufReadPost,FileChangedShellPost *.md ...` shows up here as two
+/// rows.
+fn autocmds_in_group() -> Vec<String> {
+    const PROBE: &str = "luaeval('(function() \
+        local out = {} \
+        for _, a in ipairs(vim.api.nvim_get_autocmds({ group = \"TimeTrackingNvim\" })) do \
+        out[#out + 1] = a.event .. \" \" .. tostring(a.pattern) .. \" -> \" .. tostring(a.command) \
+        end \
+        table.sort(out) \
+        return out end)()')";
+    api::eval(PROBE).unwrap()
+}
+
+/// Assert that `entry` is one of the group's registered autocommands.
+fn assert_autocmd_registered(registered: &[String], entry: &str) {
+    assert!(
+        registered.iter().any(|a| a == entry),
+        "the TimeTrackingNvim group must contain `{entry}`; it has: {registered:#?}"
+    );
+}
+
+// FINAL REVIEW #1 (W2 x bughunt B19): `QuitPre` must close the preview WITHOUT
+// marking it dismissed, so a `:q` anywhere in the session does not disable
+// auto-open for the rest of it.
+//
+// `QuitPre` fires for every `:q`, including quitting a split that has nothing
+// to do with tracking. Before dismissal existed, B19's damage was self-healing:
+// the next `VimEnter,BufWinEnter *.md TimeTrackingAutoOpen` brought the preview
+// straight back. Pointing `QuitPre` at `:TimeTrackingClose` — whose handler
+// marks dismissal — would have latched `PREVIEW_DISMISSED` on the first `:q`
+// and suppressed auto-open for *every* tracking file thereafter. It is wired to
+// `TimeTrackingAutoClose` instead, which closes and nothing more.
+#[nvim_oxi::test]
+fn test_quitpre_closes_the_preview_without_dismissing_it() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    // The real wiring, `autocmd QuitPre * ...` included.
+    time_tracking_with_config(config_static).unwrap();
+
+    // Pin the routing itself, not only its consequence: swapping the target
+    // back to `TimeTrackingClose` must fail a test on the line that changed,
+    // not only on the reopen assertion at the bottom.
+    assert_autocmd_registered(&autocmds_in_group(), "QuitPre * -> TimeTrackingAutoClose");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(preview_buffer_exists(), "preview should auto-open");
+
+    // `:q` somewhere in the session. That this closes the preview at all is
+    // bughunt B19, deliberately left as it is — the point here is what
+    // happens *next*.
+    api::command("doautocmd QuitPre").unwrap();
+    assert!(
+        !preview_buffer_exists(),
+        "QuitPre still closes the preview (bughunt B19, unchanged)"
+    );
+
+    // Coming back to a tracking file must bring the preview back. This is the
+    // assertion that fails if QuitPre ever routes through a dismissing path
+    // again.
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "QuitPre must not mark the preview dismissed: after any `:q`, the next \
+         tracking file the user opens must still auto-open its preview"
+    );
+}
+
+// FINAL REVIEW #6 (W2): the dismissal half of `:TimeTrackingClose` itself.
+//
+// The command's handler is the only one of the three dismissal sites that
+// lives in `lib.rs` rather than in `preview.rs` — it calls `close_preview()`
+// and then `mark_preview_dismissed()` — and until now only
+// `toggle_preview_fn`'s close branch was covered. Driving the real command
+// (rather than the two functions behind it) is what makes this a test of the
+// wiring as well as of the flag.
+#[nvim_oxi::test]
+fn test_close_command_dismisses_until_an_explicit_toggle() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    time_tracking_with_config(config_static).unwrap();
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(preview_buffer_exists(), "preview should auto-open");
+
+    api::command("TimeTrackingClose").unwrap();
+    assert!(!preview_buffer_exists(), ":TimeTrackingClose must close it");
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(
+        !preview_buffer_exists(),
+        ":TimeTrackingClose is an explicit dismissal: the preview must not \
+         auto-reopen on the next buffer switch"
+    );
+
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "an explicit :TimeTrackingToggle must clear the dismissal"
+    );
+}
+
 // W2: a preview closed via an explicit `:TimeTrackingToggle` (the close
 // branch of `toggle_preview_fn`, which marks the preview dismissed right
 // after `close_preview()` succeeds) must stay closed across the ordinary
@@ -2916,6 +3044,59 @@ fn test_explicit_update_refreshes_the_weekly_view_rather_than_replacing_it() {
     );
 }
 
+// FINAL REVIEW #4 (W5): the same refresh, from a buffer that is *not* a
+// tracking file.
+//
+// `:TimeTrackingWeeklyToggle` was deliberately built to work from any buffer —
+// it aggregates the data directory, not the current buffer — so "check the week
+// while working on something else" is the case it exists for. `update_preview_fn`
+// used to test `is_time_tracking_file` before dispatching on the current view,
+// which made `:TimeTrackingUpdate` a silent no-op in exactly that case. The
+// check now gates the day arm alone, where it is the right question to ask.
+#[nvim_oxi::test]
+fn test_explicit_update_refreshes_the_weekly_view_from_a_non_tracking_buffer() {
+    cleanup_preview_buffers();
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+
+    let week = current_week_dates();
+    create_test_file(temp_dir.path(), &day_file_name(week[1]), "9-10 alpha\n");
+
+    // The current buffer lives outside the data directory for the whole test.
+    let outside_dir = TempDir::new().unwrap();
+    let mut other = api::create_buf(true, false).unwrap();
+    other
+        .set_name(outside_dir.path().join("notes.md").to_str().unwrap())
+        .unwrap();
+    api::set_current_buf(&other).unwrap();
+    assert!(
+        !is_buf_time_tracking_file(&other, config_static).unwrap(),
+        "the fixture buffer must not be a tracking file"
+    );
+
+    time_tracking_nvim::toggle_weekly_preview_fn(config_static).unwrap();
+    let preview = preview_buffer();
+    assert!(
+        preview_text(&preview).contains("Total Working Time: 1:00"),
+        "the weekly view must open from a non-tracking buffer: {}",
+        preview_text(&preview)
+    );
+
+    // A new day file appears while the user is still working elsewhere.
+    create_test_file(temp_dir.path(), &day_file_name(week[2]), "10-11:30 beta\n");
+
+    time_tracking_nvim::update_preview_fn(config_static).unwrap();
+
+    let text = preview_text(&preview);
+    assert!(
+        text.contains("Total Working Time: 2:30"),
+        ":TimeTrackingUpdate must refresh an open weekly view even though the \
+         current buffer is not a tracking file: {text}"
+    );
+}
+
 // W5 / I1: the week must be anchored on the date *Neovim* reports, not on
 // `time::OffsetDateTime::now_local()`. `now_local()` fails in a multi-threaded
 // process (which Neovim plus this plugin's Tokio runtime is) and silently
@@ -3061,31 +3242,85 @@ fn test_day_view_is_still_closed_when_no_tracking_file_is_visible() {
     );
 }
 
+// W9: an on-disk change to the day file, noticed by `:checktime`, must
+// re-render the preview without the user having typed anything.
+//
+// W9 is two autocommand lines and no Rust logic, so this test registers the
+// *real* wiring via `time_tracking_with_config` (the same reason
+// `test_weekly_view_survives_switching_to_a_non_tracking_buffer` does) and then
+// asserts on the preview's rendered content. The version this replaced called
+// `toggle_preview_fn` directly and asserted only `preview_buffer_exists()`
+// before and after — both of which held identically with W9's two lines
+// deleted, so nothing in the suite noticed their absence.
+//
+// Both halves are pinned:
+//
+//   * `FocusGained,BufEnter *.md checktime` is what makes Neovim *notice* the
+//     change at all, and `BufReadPost,FileChangedShellPost *.md
+//     TimeTrackingUpdateThrottled` is what re-renders once it has. Neither is
+//     visible in the rendered text, so their registration is asserted directly.
+//   * The content assertion then proves the chain actually runs end to end:
+//     `bravo` reaches the preview from disk, through a buffer reload, with no
+//     keystroke anywhere.
 #[nvim_oxi::test]
 fn test_preview_refreshes_after_external_file_change_and_checktime() {
     cleanup_preview_buffers();
     time_tracking_nvim::reset_throttle_for_test();
     let (config, temp_dir) = create_test_config_with_temp_dir();
     let config_static: &'static Config = Box::leak(Box::new(config));
-    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 alpha\n");
 
-    let mut buf = api::create_buf(true, false).unwrap();
-    buf.set_name(file_path.to_str().unwrap()).unwrap();
-    api::set_current_buf(&buf).unwrap();
+    time_tracking_with_config(config_static).unwrap();
+
+    let registered = autocmds_in_group();
+    assert_autocmd_registered(
+        &registered,
+        "BufReadPost *.md -> TimeTrackingUpdateThrottled",
+    );
+    assert_autocmd_registered(
+        &registered,
+        "FileChangedShellPost *.md -> TimeTrackingUpdateThrottled",
+    );
+    assert_autocmd_registered(&registered, "FocusGained *.md -> checktime");
+    assert_autocmd_registered(&registered, "BufEnter *.md -> checktime");
+
+    // `:edit`, not `create_buf` + `set_name`: the buffer has to be genuinely
+    // file-backed for `:checktime` to have an on-disk mtime/size to compare
+    // against and a file to reload from. BufWinEnter fires here, so
+    // `TimeTrackingAutoOpen` normally opens the preview by itself; the toggle
+    // is a fallback, guarded so it can never become the *close* half.
     api::command(&format!("edit {}", file_path.to_str().unwrap())).unwrap();
+    if !preview_buffer_exists() {
+        time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    }
+    let preview = preview_buffer();
 
-    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
-    assert!(preview_buffer_exists());
+    let before = preview_text(&preview);
+    assert!(
+        before.contains("alpha") && !before.contains("bravo"),
+        "the preview must start on the file's original contents: {before}"
+    );
 
-    // Change the file on disk, outside the buffer.
-    create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n10-11 admin\n");
+    // Change the file on disk, behind the buffer's back — another editor, a
+    // sync client, a script.
+    fs::write(&file_path, "9-10 alpha\n10-11:30 bravo\n").unwrap();
 
+    // Establish a known throttle boundary, so the render `FileChangedShellPost`
+    // triggers takes the leading edge and lands synchronously rather than
+    // being booked onto a timer this test would have to wait out.
+    time_tracking_nvim::reset_throttle_for_test();
     api::command("checktime").unwrap();
 
-    // The autocmd chain (FileChangedShellPost -> TimeTrackingUpdateThrottled)
-    // re-renders synchronously on its leading edge (see update_preview_throttled),
-    // so the preview reflects the new content without the user typing.
-    assert!(preview_buffer_exists());
+    let after = preview_text(&preview);
+    assert!(
+        after.contains("bravo"),
+        "an external file change plus :checktime must re-render the preview \
+         with no keystroke in the buffer: {after}"
+    );
+    assert!(
+        after.contains("Total: 2:30"),
+        "the re-render must be a real re-parse, not a stale write: {after}"
+    );
 }
 
 // W11: :TimeTrackingOpenToday creates today's file from the configured

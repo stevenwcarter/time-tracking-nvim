@@ -38,13 +38,23 @@ thread_local! {
 }
 
 thread_local! {
-    /// Whether the user explicitly dismissed the preview (`:TimeTrackingClose`,
-    /// or the close half of `:TimeTrackingToggle`) since it was last opened.
+    /// Whether the user explicitly dismissed the preview since it was last
+    /// opened.
     ///
-    /// `auto_open_preview_impl` respects this: only an explicit
-    /// `:TimeTrackingToggle`/`:TimeTrackingUpdate` clears it, so the preview
-    /// stays closed across ordinary buffer/tab switches until the user asks
-    /// for it again.
+    /// Set by exactly three places, each of them a user asking, by name, to
+    /// stop seeing the preview: `:TimeTrackingClose`'s handler in `lib.rs`
+    /// (via [`mark_preview_dismissed`]), the close half of `toggle_preview_fn`
+    /// (`:TimeTrackingToggle`), and the close half of
+    /// [`toggle_weekly_preview_fn`] (`:TimeTrackingWeeklyToggle`).
+    ///
+    /// Cleared by the *open* half of either toggle — the user asking for the
+    /// preview back. Note that `:TimeTrackingUpdate` does **not** clear it:
+    /// [`update_preview_fn`] only ever re-renders a preview that is already
+    /// open, so it has no open half to clear the flag from.
+    ///
+    /// `auto_open_preview_impl` respects it, so a dismissed preview stays
+    /// closed across ordinary buffer/tab switches until one of those two
+    /// toggles reopens it.
     static PREVIEW_DISMISSED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -115,10 +125,11 @@ fn set_cached_preview_buf(buf: Option<Buffer>) {
 /// visible — an ordinary, frequent event, not a user request to stop seeing
 /// the preview. Setting the dismissal flag here would make the very first
 /// such auto-close permanently suppress auto-reopen for the rest of the
-/// session. The two paths that *are* an explicit dismissal —
-/// `:TimeTrackingClose` and the close half of `:TimeTrackingToggle` — set
-/// [`PREVIEW_DISMISSED`] themselves, right after calling [`close_preview`]
-/// (see [`mark_preview_dismissed`] and `toggle_preview_fn`).
+/// session. The three paths that *are* an explicit dismissal —
+/// `:TimeTrackingClose` and the close halves of `:TimeTrackingToggle` and
+/// `:TimeTrackingWeeklyToggle` — set [`PREVIEW_DISMISSED`] themselves, right
+/// after calling [`close_preview`] (see [`mark_preview_dismissed`],
+/// `toggle_preview_fn` and [`toggle_weekly_preview_fn`]).
 fn clear_preview_state_on_close() {
     set_cached_preview_buf(None);
     set_last_output(None);
@@ -126,14 +137,14 @@ fn clear_preview_state_on_close() {
 }
 
 /// Mark the preview dismissed by the user, so [`auto_open_preview_impl`]
-/// leaves it closed until an explicit `:TimeTrackingToggle`/`:TimeTrackingUpdate`
-/// clears the flag again.
+/// leaves it closed until the open half of `:TimeTrackingToggle` or
+/// `:TimeTrackingWeeklyToggle` clears the flag again.
 ///
 /// `pub(crate)`, not private: `:TimeTrackingClose`'s handler in `lib.rs` calls
 /// [`close_preview`] and then this, since `close_preview` itself must stay
-/// dismissal-neutral (see [`clear_preview_state_on_close`]). `toggle_preview_fn`,
-/// in this module, sets [`PREVIEW_DISMISSED`] directly instead of going through
-/// this function.
+/// dismissal-neutral (see [`clear_preview_state_on_close`]).
+/// `toggle_preview_fn` and [`toggle_weekly_preview_fn`], in this module, set
+/// [`PREVIEW_DISMISSED`] directly instead of going through this function.
 pub(crate) fn mark_preview_dismissed() {
     PREVIEW_DISMISSED.set(true);
 }
@@ -681,8 +692,7 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
 /// `:TimeTrackingUpdate`, and the render the throttle books: rebuilds whichever
 /// view the preview is currently showing.
 ///
-/// Does nothing unless the current buffer is a tracking file *and* a preview
-/// window is already open — it never opens one.
+/// Does nothing unless a preview window is already open — it never opens one.
 ///
 /// Dispatching on [`CURRENT_VIEW`] rather than always rendering the day summary
 /// is what keeps `:TimeTrackingUpdate` a *refresh*: rendering the day view
@@ -690,17 +700,28 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
 /// [`update_preview_throttled`] returns before it ever reaches here while the
 /// week is up, so the week is only ever re-aggregated on an explicit request —
 /// or once, harmlessly, by a render booked before the user switched views.
+///
+/// The tracking-file requirement gates the **day** arm only, and deliberately
+/// so. The day view is a render of the current buffer, so there is nothing to
+/// refresh when that buffer is not a tracking file. The week view is a render
+/// of the *data directory*, which is why [`toggle_weekly_preview_fn`] opens it
+/// from any buffer at all — and gating both arms on the current buffer made
+/// `:TimeTrackingUpdate` a silent no-op in precisely the situation the weekly
+/// view was built for: checking the week from somewhere else.
 pub fn update_preview_fn(config: &'static Config) -> Result<()> {
-    if !is_time_tracking_file(config)? {
+    let found = find_preview()?;
+    if !preview_is_open_in(&found) {
         return Ok(());
     }
 
-    let found = find_preview()?;
-    if preview_is_open_in(&found) {
-        match CURRENT_VIEW.get() {
-            PreviewView::Day => render_current_buffer(config, found)?,
-            PreviewView::Week => render_weekly_view(config, found)?,
+    match CURRENT_VIEW.get() {
+        PreviewView::Day => {
+            if !is_time_tracking_file(config)? {
+                return Ok(());
+            }
+            render_current_buffer(config, found)?;
         }
+        PreviewView::Week => render_weekly_view(config, found)?,
     }
 
     Ok(())
@@ -970,12 +991,14 @@ fn create_or_update_preview_with(
 /// [`PREVIEW_DISMISSED`]/[`clear_preview_state_on_close`]): this function is
 /// also the target of `TimeTrackingMaybeCloseIfInvisible`, which fires
 /// routinely on `BufEnter`/`TabEnter`/`WinClosed` whenever no tracking file is
-/// currently visible, and the (separately broken) `QuitPre` autocommand
-/// (bughunt B19) — neither of those is the user asking to stop seeing the
-/// preview. Callers for whom this close genuinely *is* a dismissal —
-/// `:TimeTrackingClose` (`lib.rs`) and the close half of `:TimeTrackingToggle`
-/// (below) — call [`mark_preview_dismissed`] (or set [`PREVIEW_DISMISSED`]
-/// directly) themselves, immediately after this call succeeds.
+/// currently visible, and — through [`auto_close_preview`] — of the
+/// (separately broken) `QuitPre` autocommand (bughunt B19), which fires for
+/// every `:q` in the session. Neither of those is the user asking to stop
+/// seeing the preview. Callers for whom this close genuinely *is* a dismissal
+/// — `:TimeTrackingClose` (`lib.rs`) and the close halves of
+/// `:TimeTrackingToggle` and `:TimeTrackingWeeklyToggle` (below) — call
+/// [`mark_preview_dismissed`] (or set [`PREVIEW_DISMISSED`] directly)
+/// themselves, immediately after this call succeeds.
 ///
 /// The window scan here is [`preview_win_anywhere`], not the tab-scoped probe
 /// [`find_preview`] uses, for two reasons.
@@ -1066,8 +1089,9 @@ pub fn auto_open_preview(config: &'static Config) -> Result<()> {
 /// a tracking buffer that no preview window is showing yet.
 fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     // A user-dismissed preview stays closed across ordinary buffer/tab
-    // switches: only an explicit :TimeTrackingToggle/:TimeTrackingUpdate
-    // clears this flag. A plain field read with no I/O, so it goes first.
+    // switches: only the open half of :TimeTrackingToggle or
+    // :TimeTrackingWeeklyToggle clears this flag. A plain field read with no
+    // I/O, so it goes first.
     if PREVIEW_DISMISSED.get() {
         return Ok(());
     }
@@ -1091,15 +1115,23 @@ fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
     Ok(())
 }
 
-/// Auto-close preview window if we're not in a time tracking file
+/// `:TimeTrackingAutoClose`, the `QuitPre` autocommand's target: close the
+/// preview without marking it dismissed.
+///
+/// The whole of the difference from `:TimeTrackingClose` is that missing
+/// dismissal, and it is why `QuitPre` points here rather than there.
+/// `QuitPre` fires for every `:q` anywhere in the session — quitting an
+/// unrelated split included — so a dismissal here would latch
+/// [`PREVIEW_DISMISSED`] and stop the preview auto-opening for every tracking
+/// file thereafter. This closes, and nothing more, which is what `QuitPre` did
+/// before dismissal existed. (That it closes the preview on *any* `:q` rather
+/// than only the one showing it is bughunt B19, deliberately left as it is.)
 pub fn auto_close_preview(config: &'static Config) -> Result<()> {
     log_and_swallow("Auto-close", auto_close_preview_impl(config))
 }
 
 fn auto_close_preview_impl(_config: &'static Config) -> Result<()> {
-    // Always close the preview when BufLeave is triggered for a markdown file.
-    // The autocommand pattern ensures we only get called for .md files.
-    log_info!("Auto-closing preview (leaving markdown file)\n");
+    log_info!("Auto-closing preview\n");
     close_preview()
 }
 
