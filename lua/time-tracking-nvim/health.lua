@@ -40,7 +40,7 @@ local function check_binary(internal)
 
 	if not binary_path then
 		health.error("Native library not found at " .. tostring(binary_path), {
-			"Run :lua require('time-tracking-nvim').download()",
+			"Run :TimeTrackingDownload",
 			"Or build locally with ./build.sh",
 		})
 		return nil
@@ -48,7 +48,7 @@ local function check_binary(internal)
 
 	if vim.fn.filereadable(binary_path) ~= 1 then
 		health.error("Native library not found at " .. binary_path, {
-			"Run :lua require('time-tracking-nvim').download()",
+			"Run :TimeTrackingDownload",
 			"Or build locally with ./build.sh",
 		})
 		return nil
@@ -58,7 +58,7 @@ local function check_binary(internal)
 	if not stat then
 		health.error("Cannot stat " .. binary_path, {
 			"Check the file's permissions",
-			"Re-run :lua require('time-tracking-nvim').download()",
+			"Re-run :TimeTrackingDownload",
 		})
 		return nil
 	end
@@ -79,7 +79,7 @@ local function check_versions(internal)
 	elseif plugin_version then
 		health.warn(
 			string.format("Version mismatch: plugin %s, binary %s", plugin_version, binary_version),
-			{ "Run :lua require('time-tracking-nvim').download()" }
+			{ "Run :TimeTrackingDownload" }
 		)
 	else
 		health.info("Binary version: " .. binary_version)

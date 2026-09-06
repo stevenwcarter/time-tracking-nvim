@@ -1004,6 +1004,20 @@ end
 function M.setup(opts)
 	opts = opts or {}
 
+	-- Registered unconditionally, before the binary-exists/load-native ladder
+	-- below: these are pure-Lua troubleshooting commands that must work even
+	-- when the native module never loads -- that is exactly the scenario they
+	-- exist to help diagnose. No pcall guard is needed against calling setup()
+	-- twice in the same session: nvim_create_user_command silently redefines
+	-- an existing command rather than erroring (verified against Neovim 0.12,
+	-- this plugin's floor -- unlike legacy `:command`, which does error).
+	vim.api.nvim_create_user_command("TimeTrackingDownload", function()
+		M.download()
+	end, { desc = "Download or re-download the native binary" })
+	vim.api.nvim_create_user_command("TimeTrackingVersion", function()
+		M.version_info()
+	end, { desc = "Show plugin/binary version info" })
+
 	local config = vim.tbl_extend("force", default_config, opts)
 
 	-- Published, not merely kept: M.download() reads allow_unverified_download
@@ -1040,7 +1054,7 @@ function M.setup(opts)
 			{
 				"binary version mismatch ("
 					.. update_reason
-					.. "); auto-update is disabled. Run :lua require('time-tracking-nvim').version_info() for detail.",
+					.. "); auto-update is disabled. Run :TimeTrackingVersion for detail.",
 				"Normal",
 			},
 		})
@@ -1171,7 +1185,7 @@ function M.version_info()
 	elseif not version_match then
 		echo({
 			{ "\n\nVersion mismatch detected!", "WarningMsg" },
-			{ "\nRun :lua require('time-tracking-nvim').download() to update", "Normal" },
+			{ "\nRun :TimeTrackingDownload to update", "Normal" },
 		})
 	end
 end
