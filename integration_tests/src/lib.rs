@@ -2330,3 +2330,48 @@ fn test_buf_classification_cache_invalidates_on_wipeout() {
     // wiping it doesn't panic or leave the invalidation command failing.
     invalidate_buf_classification(handle);
 }
+
+/// Whether any window-less preview buffer currently exists, regardless of
+/// whether a window is showing it.
+fn preview_buffer_exists() -> bool {
+    api::list_bufs().any(|b| is_preview_buf(&b).unwrap_or(false))
+}
+
+// W2: a preview closed via an explicit `close_preview()` (the shared function
+// behind `:TimeTrackingClose` and the close half of `:TimeTrackingToggle`)
+// must stay closed across the ordinary auto-open path — re-entering a
+// tracking buffer must not resurrect it — until the user explicitly asks for
+// it again via `:TimeTrackingToggle`.
+#[nvim_oxi::test]
+fn test_closed_preview_does_not_auto_reopen_until_explicitly_reopened() {
+    time_tracking_nvim::reset_throttle_for_test();
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-01.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(preview_buffer_exists(), "preview should auto-open");
+
+    close_preview().unwrap();
+    assert!(!preview_buffer_exists(), "preview should be closed");
+
+    // Simulate the auto-open path firing again for the same tracking
+    // buffer -- it must NOT reopen a dismissed preview.
+    time_tracking_nvim::auto_open_preview(config_static).unwrap();
+    assert!(
+        !preview_buffer_exists(),
+        "a dismissed preview must not auto-reopen"
+    );
+
+    // An explicit :TimeTrackingToggle asks for it again.
+    time_tracking_nvim::toggle_preview_fn(config_static).unwrap();
+    assert!(
+        preview_buffer_exists(),
+        "an explicit toggle must reopen a dismissed preview"
+    );
+}

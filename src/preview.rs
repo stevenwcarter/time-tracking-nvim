@@ -31,6 +31,17 @@ thread_local! {
     static LAST_OUTPUT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// Whether the user explicitly dismissed the preview (`:TimeTrackingClose`,
+    /// or the close half of `:TimeTrackingToggle`) since it was last opened.
+    ///
+    /// `auto_open_preview_impl` respects this: only an explicit
+    /// `:TimeTrackingToggle`/`:TimeTrackingUpdate` clears it, so the preview
+    /// stays closed across ordinary buffer/tab switches until the user asks
+    /// for it again.
+    static PREVIEW_DISMISSED: Cell<bool> = const { Cell::new(false) };
+}
+
 fn set_last_output(output: Option<String>) {
     LAST_OUTPUT.with(|cell| *cell.borrow_mut() = output);
 }
@@ -55,6 +66,16 @@ fn cached_preview_buf() -> Option<Buffer> {
 
 fn set_cached_preview_buf(buf: Option<Buffer>) {
     PREVIEW_BUF.with(|cell| *cell.borrow_mut() = buf);
+}
+
+/// Clear both preview caches and mark the preview dismissed.
+///
+/// Called from every path in `close_preview` that actually closes or swaps
+/// out the preview window.
+fn clear_preview_state_on_close() {
+    set_cached_preview_buf(None);
+    set_last_output(None);
+    PREVIEW_DISMISSED.set(true);
 }
 
 /// The window in the *current tabpage* showing `buf`, if any.
@@ -351,6 +372,7 @@ pub fn toggle_preview_fn(config: &'static Config) -> Result<()> {
     if preview_is_open_in(&found) {
         close_preview()?;
     } else {
+        PREVIEW_DISMISSED.set(false);
         render_current_buffer(config, found)?;
     }
 
@@ -632,8 +654,10 @@ fn create_or_update_preview_with(
     Ok(())
 }
 
-/// Closes the preview window — wherever it lives — and clears both preview
-/// caches.
+/// Closes the preview window — wherever it lives — clears both preview
+/// caches, and marks the preview dismissed (see [`PREVIEW_DISMISSED`]) so
+/// `auto_open_preview_impl` leaves it closed until the user explicitly asks
+/// for it again via `:TimeTrackingToggle`/`:TimeTrackingUpdate`.
 ///
 /// The window scan here is [`preview_win_anywhere`], not the tab-scoped probe
 /// [`find_preview`] uses, for two reasons.
@@ -653,8 +677,13 @@ fn create_or_update_preview_with(
 ///
 /// When the preview is the only window left it is not closed at all:
 /// `nvim_win_close` refuses the last window with E444, so a fresh listed buffer
-/// is swapped into it instead. The caches are cleared on every path, including
-/// the early return taken when no preview is open.
+/// is swapped into it instead. [`clear_preview_state_on_close`] runs on every
+/// path, including the early return taken when no preview is open — so every
+/// caller of this function, including the invisibility-driven auto-close in
+/// `TimeTrackingMaybeCloseIfInvisible` and the (separately broken) `QuitPre`
+/// autocommand, counts as a dismissal. See the W2 spec for why that is not a
+/// scope problem: this is the one function that actually closes/swaps the
+/// preview window, by design.
 pub fn close_preview() -> Result<()> {
     let preview_win = match find_preview_buf()? {
         Some(buf) => preview_win_anywhere(&buf)?,
@@ -662,8 +691,7 @@ pub fn close_preview() -> Result<()> {
     };
 
     let Some(mut win) = preview_win else {
-        set_cached_preview_buf(None);
-        set_last_output(None);
+        clear_preview_state_on_close();
         return Ok(());
     };
 
@@ -699,8 +727,7 @@ pub fn close_preview() -> Result<()> {
         );
     }
 
-    set_cached_preview_buf(None);
-    set_last_output(None);
+    clear_preview_state_on_close();
     Ok(())
 }
 
@@ -725,6 +752,13 @@ pub fn auto_open_preview(config: &'static Config) -> Result<()> {
 /// Fallible body behind [`auto_open_preview`]: renders and opens the preview for
 /// a tracking buffer that no preview window is showing yet.
 fn auto_open_preview_impl(config: &'static Config) -> Result<()> {
+    // A user-dismissed preview stays closed across ordinary buffer/tab
+    // switches: only an explicit :TimeTrackingToggle/:TimeTrackingUpdate
+    // clears this flag. A plain field read with no I/O, so it goes first.
+    if PREVIEW_DISMISSED.get() {
+        return Ok(());
+    }
+
     // No delay here: this runs on Neovim's single event-loop thread, so
     // sleeping cannot let a pending window operation complete — it is exactly
     // what prevents it. The split-during-close race is handled by the E242
