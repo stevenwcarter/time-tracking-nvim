@@ -31,7 +31,7 @@ local function notify(hl, chunks, opts)
 end
 
 -- Plugin version (should match Cargo.toml)
-local PLUGIN_VERSION = "0.2.2"
+local PLUGIN_VERSION = "0.2.3"
 
 local REPO = "stevenwcarter/time-tracking-nvim"
 local RELEASES_URL = "https://github.com/" .. REPO .. "/releases"
@@ -1136,20 +1136,26 @@ function M.download()
 		{ "Manually downloading binary for " .. target .. "...", "Normal" },
 	})
 
-	download_binary(target, binary_path, function(success, message)
-		if success then
-			notify("MoreMsg", {
-				{ "Binary downloaded successfully to " .. binary_path, "Normal" },
-			})
-		else
-			notify("ErrorMsg", {
-				{ "Download failed: " .. message, "Normal" },
-			})
-		end
-	end, PLUGIN_VERSION, {
-		allow_unverified = (M.config or {}).allow_unverified_download,
-		github_token = (M.config or {}).github_token,
-	})
+	download_binary(
+		target,
+		binary_path,
+		function(success, message)
+			if success then
+				notify("MoreMsg", {
+					{ "Binary downloaded successfully to " .. binary_path, "Normal" },
+				})
+			else
+				notify("ErrorMsg", {
+					{ "Download failed: " .. message, "Normal" },
+				})
+			end
+		end,
+		PLUGIN_VERSION,
+		{
+			allow_unverified = (M.config or {}).allow_unverified_download,
+			github_token = (M.config or {}).github_token,
+		}
+	)
 end
 
 -- Check version information
