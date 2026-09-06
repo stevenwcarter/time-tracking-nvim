@@ -23,6 +23,7 @@ name = "time_tracking_nvim"
 
 [dependencies]
 time-tracking-cli = { git = "https://github.com/stevenwcarter/time-tracking-cli.git", branch = "main", default-features = false }
+time-tracking-parser = { git = "https://github.com/stevenwcarter/time-tracking-parser" }
 nvim-oxi = { git = "https://github.com/noib3/nvim-oxi", branch = "main", features = [
     "neovim-0-12",
 ] }

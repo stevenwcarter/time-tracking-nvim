@@ -2415,3 +2415,93 @@ fn test_routine_auto_close_does_not_suppress_the_next_auto_open() {
         "a routine, non-dismissing auto-close must not block the next auto-open"
     );
 }
+
+// W3: `buffer_status` gives statusline-style integrations (lualine, etc.) a
+// value back for a tracking buffer instead of a rendered preview.
+#[nvim_oxi::test]
+fn test_status_reports_totals_for_a_tracking_buffer() {
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(
+        temp_dir.path(),
+        "2024-01-01.md",
+        "9-10 work\n10-10:30 admin\n",
+    );
+
+    // `set_name` alone does not load the file's on-disk content into the
+    // buffer (nvim-oxi's `create_buf` never reads the file, unlike `:edit`)
+    // -- set the lines explicitly so `get_buffer_content()` below has
+    // something to parse, matching what `create_test_file` wrote to disk.
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    buf.set_lines(.., false, ["9-10 work", "10-10:30 admin"])
+        .unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let status = time_tracking_nvim::utils::buffer_status(
+        &time_tracking_nvim::utils::get_buffer_content().unwrap(),
+        config_static,
+    );
+
+    let total_minutes = status
+        .iter()
+        .find(|(k, _)| k.to_str() == Ok("total_minutes"))
+        .map(|(_, v)| v.clone());
+    assert_eq!(
+        total_minutes,
+        Some(nvim_oxi::Object::from(90i64)),
+        "total_minutes must be present and correct: {:?}",
+        status
+    );
+}
+
+// W3: a buffer outside the configured data directory must not be classified
+// as a tracking file, so callers (the `status` command, `M.summary()`) know
+// to report `{ is_tracking_file = false }` rather than parse it.
+#[nvim_oxi::test]
+fn test_status_marks_non_tracking_buffer() {
+    let (config, _temp_dir) = create_test_config_with_temp_dir();
+    let other_dir = TempDir::new().unwrap();
+    let outside_path = other_dir.path().join("notes.md");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(outside_path.to_str().unwrap()).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    assert!(!is_time_tracking_file(&config).unwrap());
+}
+
+// W3: the brief's other two tests exercise `buffer_status` directly; this one
+// exercises the actual seam added to `lib.rs` -- that `time_tracking_with_config`
+// wires a *callable* `status` Function into the returned Dictionary, the same
+// object Lua's `require("time_tracking_nvim").status()` would invoke.
+#[nvim_oxi::test]
+fn test_status_function_on_the_returned_dictionary_is_callable() {
+    use nvim_oxi::conversion::FromObject;
+
+    let (config, temp_dir) = create_test_config_with_temp_dir();
+    let config_static: &'static Config = Box::leak(Box::new(config));
+    let file_path = create_test_file(temp_dir.path(), "2024-01-02.md", "9-10 work\n");
+
+    let mut buf = api::create_buf(true, false).unwrap();
+    buf.set_name(file_path.to_str().unwrap()).unwrap();
+    buf.set_lines(.., false, ["9-10 work"]).unwrap();
+    api::set_current_buf(&buf).unwrap();
+
+    let dict = time_tracking_with_config(config_static).unwrap();
+    let status_obj = dict
+        .get("status")
+        .cloned()
+        .expect("time_tracking_with_config's Dictionary must carry a \"status\" key");
+
+    let status_fn: nvim_oxi::Function<(), nvim_oxi::Dictionary> =
+        FromObject::from_object(status_obj).expect("\"status\" must be a callable Function");
+
+    let result = status_fn.call(()).expect("calling status() must not error");
+    assert_eq!(
+        result.get("total_minutes"),
+        Some(&nvim_oxi::Object::from(60i64)),
+        "status() must report the current tracking buffer's parsed totals: {:?}",
+        result
+    );
+}

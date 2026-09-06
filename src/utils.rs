@@ -14,7 +14,7 @@ use std::{
 };
 
 use nvim_oxi::{
-    Result,
+    Dictionary, Result,
     api::{self, Buffer, Window},
 };
 use time_tracking_cli::Config;
@@ -248,6 +248,38 @@ pub fn get_buffer_content() -> Result<String> {
     Ok(content)
 }
 
+/// Parsed totals for `buffer_content`, for statusline-style integrations
+/// that want a value back rather than a rendered preview.
+///
+/// Always reports `is_tracking_file: true` — callers that already know the
+/// buffer is a tracking file (this plugin's own `status` command) check
+/// `is_time_tracking_file` first and only call this when it's already
+/// `true`; a caller unsure of that should check first rather than rely on
+/// this function to judge it.
+pub fn buffer_status(buffer_content: &str, config: &Config) -> Dictionary {
+    let data = time_tracking_parser::parse_time_tracking_data(
+        buffer_content,
+        config.get_prefix(),
+        config.get_suffix(),
+    );
+
+    Dictionary::from_iter([
+        ("is_tracking_file", nvim_oxi::Object::from(true)),
+        (
+            "total_minutes",
+            nvim_oxi::Object::from(data.total_minutes as i64),
+        ),
+        (
+            "dead_time_minutes",
+            nvim_oxi::Object::from(data.dead_time_minutes as i64),
+        ),
+        (
+            "warning_count",
+            nvim_oxi::Object::from(data.warnings.len() as i64),
+        ),
+    ])
+}
+
 /// Name given to the preview scratch buffer.
 ///
 /// Neovim reports buffer names as absolute paths, so every consumer matches on
@@ -285,4 +317,24 @@ pub fn any_tracking_visible(config: &Config, exclude_win: Option<i32>) -> Result
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nvim_oxi::Object;
+
+    #[test]
+    fn buffer_status_parses_totals_from_content() {
+        let config = Config {
+            data_directory: Some("/tmp/does-not-matter-for-this-test".to_string()),
+            ..Default::default()
+        };
+        let dict = buffer_status("9-10 work\n10-10:30 admin\n", &config);
+
+        assert_eq!(dict.get("total_minutes"), Some(&Object::from(90i64)));
+        assert_eq!(dict.get("is_tracking_file"), Some(&Object::from(true)));
+        assert_eq!(dict.get("dead_time_minutes"), Some(&Object::from(0i64)));
+        assert_eq!(dict.get("warning_count"), Some(&Object::from(0i64)));
+    }
 }

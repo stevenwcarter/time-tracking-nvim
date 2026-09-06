@@ -1068,6 +1068,18 @@ function M.close()
 	vim.cmd("TimeTrackingClose")
 end
 
+-- Returns the current tracking buffer's parsed totals (total_minutes,
+-- dead_time_minutes, warning_count), or { is_tracking_file = false } when
+-- the current buffer isn't one -- for statusline (lualine, etc.)
+-- integrations that want a value back, not a rendered preview.
+function M.summary()
+	local ok, native = pcall(require, "time_tracking_nvim")
+	if not ok or not native.status then
+		return { is_tracking_file = false }
+	end
+	return native.status()
+end
+
 -- Manual download function for troubleshooting
 function M.download()
 	local binary_path, target = get_binary_path()
